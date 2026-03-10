@@ -1,0 +1,63 @@
+# Deployment name prefix
+name = "ray"
+
+# Host cluster
+host_kubeconfig_path  = "~/.kube/config"
+kubeconfig_output_dir = "."
+
+# vCluster Platform
+platform_url          = "https://platform.example.com"
+platform_project_name = "default"
+
+# Secrets -- do NOT put sensitive values in this file.
+# Copy the secrets example and fill in your values:
+#
+#   cp secrets.auto.tfvars.example secrets.auto.tfvars
+#
+# Required: platform_access_key
+
+# Auto Nodes — set node_provider_name and auto_node_properties for your cloud
+# GCP example:
+#   node_provider_name = "gcp-compute"
+#   auto_node_properties = { project = "my-gcp-project", region = "us-central1" }
+# AWS example:
+#   node_provider_name = "aws-ec2"
+#   auto_node_properties = { region = "us-east-1" }
+node_provider_name   = ""
+auto_node_properties = {}
+
+# Node groups — cloud-specific instance types
+# GCP example:
+#   node_groups = {
+#     dynamic = [
+#       { name = "cpu-pool", node_types = ["gcp-compute.e2-standard-8"] },
+#       { name = "gpu-pool", node_types = ["gcp-compute.n1-standard-4-t4", "gcp-compute.g2-standard-4"], limits = { nodes = 5 } }
+#     ]
+#   }
+# AWS example:
+#   node_groups = {
+#     dynamic = [
+#       { name = "cpu-pool", node_types = ["aws-ec2.m5.xlarge"] },
+#       { name = "gpu-pool", node_types = ["aws-ec2.g4dn.xlarge", "aws-ec2.g6.xlarge"], limits = { nodes = 5 } }
+#     ]
+#   }
+
+tenants = [
+  {
+    name            = "tenant-1"
+    worker_replicas = 1
+    gpu_per_worker  = 1
+    # enable_autoscaling = true
+    # max_workers        = 5
+  }
+]
+
+# KubeRay
+# kuberay_version        = "1.5.1"
+# ray_version            = "2.54.0"
+# deploy_default_cluster = true
+
+# Optional: GPU Operator
+# deploy_gpu_operator         = true
+# gpu_operator_version        = "v25.10.1"
+# gpu_operator_driver_enabled = true

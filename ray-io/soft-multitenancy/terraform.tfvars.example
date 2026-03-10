@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
+
+name       = "ray-tenant-1"
+ingress_ip = "10.0.0.100"
+
+# Optional: set an explicit cluster URL instead of auto-deriving from name + ingress_ip
+# cluster_url = "https://ray-tenant-1.example.com"
+
+# Path to the host cluster kubeconfig (default: ~/.kube/config)
+# kubeconfig_path = "~/.kube/config"
+
+# ---------------------------------------------------------------------------
+# vCluster Platform
+# ---------------------------------------------------------------------------
+
+platform_url        = "https://platform.example.com"
+platform_access_key = "loft-access-key-xxxxx"
+
+# Skip TLS verification for the vCluster Platform (default: true)
+# platform_insecure = true
+
+# vCluster Platform project (default: "default")
+# platform_project_name = "default"
+
+# vCluster Helm chart version (default: "0.31.0")
+# vcluster_chart_version = "0.31.0"
+
+# ---------------------------------------------------------------------------
+# KubeRay Operator (shared on host)
+# ---------------------------------------------------------------------------
+
+# Deploy the shared KubeRay operator on the host cluster (default: true)
+# Set to false if the operator is already installed or managed separately.
+# Docs: https://docs.ray.io/en/latest/cluster/kubernetes/getting-started/kuberay-operator-installation.html
+# deploy_kuberay_operator = true
+
+# KubeRay operator Helm chart version (default: "1.5.1")
+# kuberay_operator_version = "1.5.1"
+
+# Ray container image version (default: "2.53.0")
+# Docs: https://docs.ray.io/en/latest/ray-overview/installation.html
+# ray_version = "2.53.0"
+
+# ---------------------------------------------------------------------------
+# GPU Operator
+# ---------------------------------------------------------------------------
+
+# Deploy the NVIDIA GPU Operator on the host (shared across tenants, default: false)
+# install_gpu_operator = false
+
+# NVIDIA GPU Operator chart version (default: "v24.9.1")
+# gpu_operator_version = "v24.9.1"

@@ -30,6 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         directory:
+          - ray-io/hard-multitenancy
+          - ray-io/soft-multitenancy
           - run-ai/_shared/runai-auth
           - run-ai/_shared/runai-cluster-registration
           - run-ai/_shared/runai-project
@@ -38,6 +40,7 @@ jobs:
           - skypilot/hard-multitenancy
           - slinky/hard-multitenancy
           - slinky/soft-multitenancy
+
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: terraform-linters/setup-tflint@4cb9feea73331a35b422df102992a03a44a3bb33 # v6.2.1
@@ -52,6 +55,8 @@ jobs:
       fail-fast: false
       matrix:
         directory:
+          - ray-io/hard-multitenancy
+          - ray-io/soft-multitenancy
           - run-ai/_shared/runai-auth
           - run-ai/_shared/runai-cluster-registration
           - run-ai/_shared/runai-project
@@ -79,6 +84,8 @@ jobs:
       fail-fast: false
       matrix:
         directory:
+          - ray-io/hard-multitenancy
+          - ray-io/soft-multitenancy
           - run-ai/_shared/runai-auth
           - run-ai/_shared/runai-cluster-registration
           - run-ai/_shared/runai-project
@@ -106,6 +113,8 @@ jobs:
       fail-fast: false
       matrix:
         directory:
+          - ray-io/hard-multitenancy
+          - ray-io/soft-multitenancy
           - run-ai/_shared/runai-auth
           - run-ai/_shared/runai-cluster-registration
           - run-ai/_shared/runai-project
