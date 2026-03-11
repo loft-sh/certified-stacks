@@ -1,0 +1,73 @@
+# Deployment name prefix
+name = "soft-mt"
+
+# Host cluster
+host_kubeconfig_path  = "~/.kube/config"
+kubeconfig_output_dir = "."
+
+# vCluster Platform
+platform_url          = "https://platform.example.com"
+platform_access_key   = "your-platform-access-key"
+platform_project_name = "default"
+
+# Run:AI Control Plane (external)
+runai_cp_url               = "https://runai.example.com"
+runai_admin_email          = "admin@run.ai"
+runai_admin_password       = "your-admin-password"
+runai_registry_credentials = "eyJ..." # base64-encoded Docker config JSON
+
+# Optional: CA cert for self-signed TLS on the Run:AI CP
+# runai_cp_ca_cert = "base64-encoded-ca-pem"
+
+# Agents – one vCluster per agent, with dedicated host nodes via label selector.
+# Nodes must be labeled with <node_selector_label_key>=<node_selector_label_value>.
+# Omit node_selector_label_value (or set to "") for shared/unlabeled nodes.
+agents = [
+  {
+    name                      = "tenant-a"
+    domain                    = "tenant-a.10.0.0.1.nip.io"
+    node_selector_label_value = "tenant-a"
+    # inference_domain        = "inference-a.example.com"
+  },
+  {
+    name                      = "tenant-b"
+    domain                    = "tenant-b.10.0.0.1.nip.io"
+    node_selector_label_value = "tenant-b"
+  }
+]
+
+# Optional: pre-provided cluster registration (skip automated registration)
+# agents = [
+#   {
+#     name          = "tenant-a"
+#     domain        = "tenant-a.10.0.0.1.nip.io"
+#     cluster_uid   = "your-cluster-uid"
+#     client_secret = "your-client-secret"
+#   }
+# ]
+
+# Node selector label key (default: "tenant")
+# node_selector_label_key = "tenant"
+
+# Whether to create a Run:AI project per agent cluster (default: true)
+# create_project = true
+
+# High availability (default: false)
+# high_availability = true
+# ha_replicas       = 3
+
+# GPU Operator (default: true)
+# deploy_gpu_operator             = true
+# gpu_operator_version            = "v24.9.0"
+# gpu_operator_driver_enabled     = false
+# gpu_operator_device_plugin_enabled = true
+# gpu_operator_driver_install_dir = "/run/nvidia/driver"
+
+# Prometheus Operator (default: true)
+# deploy_prometheus_operator    = true
+# kube_prometheus_stack_version = "72.6.2"
+
+# Inference / Knative (default: true)
+# enable_inference         = true
+# knative_operator_version = "1.18.0"
+# knative_serving_version  = "1.16.3"
