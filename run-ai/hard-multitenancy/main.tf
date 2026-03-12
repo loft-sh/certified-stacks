@@ -164,16 +164,11 @@ resource "tls_locally_signed_cert" "agent_domain" {
 # REST API – authenticate against the Run:AI control plane
 # ---------------------------------------------------------------------------
 
-resource "local_sensitive_file" "cp_ca_cert" {
-  content  = var.tls_mode == "self-signed" ? tls_self_signed_cert.ca[0].cert_pem : var.user_ca_cert
-  filename = "${path.module}/.terraform/cp-ca.pem"
-}
-
 provider "restful" {
   base_url = local.cp_url
   client = {
-    root_ca_certificate_files = [local_sensitive_file.cp_ca_cert.filename]
-    certificates              = []
+    root_ca_certificates = [var.tls_mode == "self-signed" ? tls_self_signed_cert.ca[0].cert_pem : var.user_ca_cert]
+    certificates         = []
     retry = {
       # Retry on connectivity errors (0) and server errors (5xx).
       # Do not retry on 4xx — the wait_for_runai_cp_ready resource

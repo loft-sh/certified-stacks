@@ -144,6 +144,15 @@ variable "agents" {
     client_secret = optional(string, "")
   }))
   default = []
+
+  validation {
+    condition = alltrue([
+      for a in var.agents :
+      (a.cluster_uid == "" && a.client_secret == "") ||
+      (a.cluster_uid != "" && a.client_secret != "")
+    ])
+    error_message = "Each agent must provide both cluster_uid and client_secret, or neither."
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -173,7 +182,7 @@ variable "ha_replicas" {
 }
 
 # ---------------------------------------------------------------------------
-# GPU Operator
+# Helm Chart Versions (shared)
 # ---------------------------------------------------------------------------
 
 variable "raw_chart_version" {
@@ -181,6 +190,10 @@ variable "raw_chart_version" {
   type        = string
   default     = "2.0.2"
 }
+
+# ---------------------------------------------------------------------------
+# GPU Operator
+# ---------------------------------------------------------------------------
 
 variable "deploy_gpu_operator" {
   description = "Deploy NVIDIA GPU Operator inside agent vClusters"

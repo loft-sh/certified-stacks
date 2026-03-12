@@ -262,7 +262,6 @@ agents = [
 
 | Name | Version |
 |------|---------|
-| local | 2.7.0 |
 | random | 3.8.1 |
 | restful | 0.25.1 |
 | tls | 4.2.1 |
@@ -279,7 +278,6 @@ agents = [
 
 | Name | Type |
 |------|------|
-| [local_sensitive_file.cp_ca_cert](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/sensitive_file) | resource |
 | [random_password.runai_admin](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/password) | resource |
 | [restful_operation.cluster_creds](https://registry.terraform.io/providers/magodo/restful/latest/docs/resources/operation) | resource |
 | [restful_operation.create_cluster](https://registry.terraform.io/providers/magodo/restful/latest/docs/resources/operation) | resource |
