@@ -55,7 +55,7 @@ variable "platform_project_name" {
 variable "platform_insecure" {
   description = "Skip TLS verification for the vCluster Platform API"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "vcluster_chart_version" {
@@ -139,7 +139,9 @@ variable "agents" {
     inference_service_annotations = optional(map(string), {})
     ingress_service_annotations   = optional(map(string), {})
     cluster_uid                   = optional(string, "")
-    client_secret                 = optional(string, "")
+    # Note: client_secret cannot be marked sensitive inside an object type.
+    # Plan output may display this value. Use an encrypted remote backend.
+    client_secret = optional(string, "")
   }))
   default = []
 }
@@ -173,6 +175,12 @@ variable "ha_replicas" {
 # ---------------------------------------------------------------------------
 # GPU Operator
 # ---------------------------------------------------------------------------
+
+variable "raw_chart_version" {
+  description = "Bedag raw Helm chart version (used to deploy Knative Serving CR)"
+  type        = string
+  default     = "2.0.2"
+}
 
 variable "deploy_gpu_operator" {
   description = "Deploy NVIDIA GPU Operator inside agent vClusters"

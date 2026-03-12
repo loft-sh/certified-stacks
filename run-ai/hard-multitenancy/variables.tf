@@ -45,7 +45,7 @@ variable "platform_project_name" {
 variable "platform_insecure" {
   description = "Skip TLS verification for the vCluster Platform API"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "vcluster_chart_version" {
@@ -253,6 +253,18 @@ variable "knative_serving_version" {
   description = "Knative Serving version installed by the operator"
   type        = string
   default     = "1.16.3"
+}
+
+variable "ingress_nginx_chart_version" {
+  description = "ingress-nginx Helm chart version"
+  type        = string
+  default     = "4.12.1"
+}
+
+variable "raw_chart_version" {
+  description = "Bedag raw Helm chart version (used to deploy Knative Serving CR)"
+  type        = string
+  default     = "2.0.2"
 }
 
 variable "deploy_gpu_operator" {

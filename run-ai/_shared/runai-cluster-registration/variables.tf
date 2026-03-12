@@ -23,6 +23,11 @@ variable "cluster_name" {
 variable "cluster_url" {
   description = "External URL for the cluster (e.g. https://agent-1.example.com)"
   type        = string
+
+  validation {
+    condition     = can(regex("^https?://", var.cluster_url))
+    error_message = "cluster_url must start with http:// or https://."
+  }
 }
 
 variable "runai_cluster_agent_version" {

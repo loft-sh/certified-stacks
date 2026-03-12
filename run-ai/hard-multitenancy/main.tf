@@ -92,8 +92,7 @@ locals {
 # ---------------------------------------------------------------------------
 
 module "cp_vcluster" {
-  # TODO: switch to loft-sh/vcluster-terraform-modules.git once PR #5 is merged
-  source = "git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster?ref=feat/add-vcluster-management-modules"
+  source = "git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster?ref=v1.0.0"
 
   name                   = local.cp_name
   namespace              = local.cp_name
@@ -123,6 +122,7 @@ module "cp_vcluster" {
     dynamic_node_groups            = var.cp_node_groups.dynamic
     cp_static_ip                   = var.cp_static_ip
     cp_ingress_service_annotations = var.cp_ingress_service_annotations
+    ingress_nginx_chart_version    = var.ingress_nginx_chart_version
   })]
 }
 
@@ -164,16 +164,21 @@ resource "tls_locally_signed_cert" "agent_domain" {
 # REST API – authenticate against the Run:AI control plane
 # ---------------------------------------------------------------------------
 
+resource "local_sensitive_file" "cp_ca_cert" {
+  content  = var.tls_mode == "self-signed" ? tls_self_signed_cert.ca[0].cert_pem : var.user_ca_cert
+  filename = "${path.module}/.terraform/cp-ca.pem"
+}
+
 provider "restful" {
   base_url = local.cp_url
   client = {
-    # Always true: the Run:AI CP is deployed inside a vCluster with self-signed
-    # TLS certificates that the restful provider cannot validate.
-    tls_insecure_skip_verify = true
+    root_ca_certificate_files = [local_sensitive_file.cp_ca_cert.filename]
+    certificates              = []
     retry = {
-      # Retry on connectivity errors (0), auth/not-found (401/403/404) because
-      # the CP may still be initializing, and server errors (5xx).
-      status_codes    = [0, 401, 403, 404, 500, 502, 503, 504]
+      # Retry on connectivity errors (0) and server errors (5xx).
+      # Do not retry on 4xx — the wait_for_runai_cp_ready resource
+      # handles readiness before any auth calls are made.
+      status_codes    = [0, 500, 502, 503, 504]
       count           = var.cp_health_check_retries
       wait_in_sec     = var.cp_health_check_interval
       max_wait_in_sec = 30
@@ -242,8 +247,7 @@ resource "restful_operation" "cluster_creds" {
 
 module "agent_vcluster" {
   for_each = { for a in var.agents : a.name => a }
-  # TODO: switch to loft-sh/vcluster-terraform-modules.git once PR #5 is merged
-  source = "git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster?ref=feat/add-vcluster-management-modules"
+  source   = "git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster?ref=v1.0.0"
 
   name                   = "${var.name}-${each.key}"
   namespace              = "${var.name}-${each.key}"
@@ -289,6 +293,8 @@ module "agent_vcluster" {
     agent_domain_tls_key_b64      = var.tls_mode == "self-signed" ? base64encode(tls_private_key.agent_domain[each.key].private_key_pem) : base64encode(var.user_tls_key)
     inference_tls_cert_b64        = var.enable_inference && each.value.inference_domain != "" ? (var.tls_mode == "self-signed" ? base64encode("${tls_locally_signed_cert.agent_domain[each.key].cert_pem}${tls_self_signed_cert.ca[0].cert_pem}") : base64encode(var.user_tls_cert)) : ""
     inference_tls_key_b64         = var.enable_inference && each.value.inference_domain != "" ? (var.tls_mode == "self-signed" ? base64encode(tls_private_key.agent_domain[each.key].private_key_pem) : base64encode(var.user_tls_key)) : ""
+    ingress_nginx_chart_version   = var.ingress_nginx_chart_version
+    raw_chart_version             = var.raw_chart_version
   })]
 
   depends_on = [restful_operation.cluster_creds]

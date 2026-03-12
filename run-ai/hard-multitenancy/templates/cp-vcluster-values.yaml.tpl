@@ -138,7 +138,7 @@ experimental:
         - chart:
             name: ingress-nginx
             repo: https://kubernetes.github.io/ingress-nginx
-            version: "4.12.1"
+            version: "${ingress_nginx_chart_version}"
           release:
             name: ingress-nginx
             namespace: ingress-nginx

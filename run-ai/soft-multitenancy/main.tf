@@ -55,13 +55,19 @@ locals {
 # TLS – self-signed certificates for workload domains (Run:AI ingress-nginx)
 # ---------------------------------------------------------------------------
 
+locals {
+  has_workload_domain = anytrue([for a in var.agents : a.workload_domain != ""])
+}
+
 resource "tls_private_key" "workload_domain_ca" {
+  count     = local.has_workload_domain ? 1 : 0
   algorithm = "RSA"
   rsa_bits  = 4096
 }
 
 resource "tls_self_signed_cert" "workload_domain_ca" {
-  private_key_pem = tls_private_key.workload_domain_ca.private_key_pem
+  count           = local.has_workload_domain ? 1 : 0
+  private_key_pem = tls_private_key.workload_domain_ca[0].private_key_pem
   subject {
     common_name = "Run:AI Workload Domain CA"
   }
@@ -88,8 +94,8 @@ resource "tls_cert_request" "workload_domain" {
 resource "tls_locally_signed_cert" "workload_domain" {
   for_each           = { for a in var.agents : a.name => a if a.workload_domain != "" }
   cert_request_pem   = tls_cert_request.workload_domain[each.key].cert_request_pem
-  ca_private_key_pem = tls_private_key.workload_domain_ca.private_key_pem
-  ca_cert_pem        = tls_self_signed_cert.workload_domain_ca.cert_pem
+  ca_private_key_pem = tls_private_key.workload_domain_ca[0].private_key_pem
+  ca_cert_pem        = tls_self_signed_cert.workload_domain_ca[0].cert_pem
 
   validity_period_hours = 8760
   allowed_uses          = ["server_auth", "digital_signature", "key_encipherment"]
@@ -162,8 +168,7 @@ module "cluster_registration" {
 
 module "agent_vcluster" {
   for_each = local.agents_map
-  # TODO: switch to loft-sh/vcluster-terraform-modules.git once PR #5 is merged
-  source = "git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster?ref=feat/add-vcluster-management-modules"
+  source   = "git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster?ref=v1.0.0"
 
   name                   = "${var.name}-${each.key}"
   namespace              = "${var.name}-${each.key}"
@@ -228,9 +233,10 @@ module "agent_vcluster" {
     inference_service_annotations = each.value.inference_service_annotations
     inference_tls_cert_b64        = var.enable_inference && each.value.inference_domain != "" ? base64encode("${tls_locally_signed_cert.inference_domain[each.key].cert_pem}${tls_self_signed_cert.inference_ca[0].cert_pem}") : ""
     inference_tls_key_b64         = var.enable_inference && each.value.inference_domain != "" ? base64encode(tls_private_key.inference_domain[each.key].private_key_pem) : ""
+    raw_chart_version             = var.raw_chart_version
 
     # Workload domain TLS
-    workload_domain_tls_cert_b64 = each.value.workload_domain != "" ? base64encode("${tls_locally_signed_cert.workload_domain[each.key].cert_pem}${tls_self_signed_cert.workload_domain_ca.cert_pem}") : ""
+    workload_domain_tls_cert_b64 = each.value.workload_domain != "" ? base64encode("${tls_locally_signed_cert.workload_domain[each.key].cert_pem}${tls_self_signed_cert.workload_domain_ca[0].cert_pem}") : ""
     workload_domain_tls_key_b64  = each.value.workload_domain != "" ? base64encode(tls_private_key.workload_domain[each.key].private_key_pem) : ""
   })]
 

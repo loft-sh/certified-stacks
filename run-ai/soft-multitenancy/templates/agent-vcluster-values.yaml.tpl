@@ -248,7 +248,7 @@ experimental:
         - chart:
             name: raw
             repo: https://bedag.github.io/helm-charts/
-            version: "2.0.2"
+            version: "${raw_chart_version}"
           release:
             name: knative-serving-cr
             namespace: knative-serving

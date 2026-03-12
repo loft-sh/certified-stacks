@@ -135,9 +135,8 @@ module "soft_multitenancy" {
   # Inference (Knative)
   enable_inference = true
 
-  # TLS — environment CA (optional)
-  ca_cert_pem        = var.ca_cert_pem
-  ca_private_key_pem = var.ca_private_key_pem
+  # Optional: CA cert if CP uses self-signed TLS
+  # runai_cp_ca_cert = var.runai_cp_ca_cert
 }
 ```
 
@@ -189,7 +188,7 @@ agents = [
 |------|---------|
 | terraform | >= 1.5 |
 | helm | ~> 2.0 |
-| kubernetes | >= 2.0 |
+| kubernetes | ~> 2.0 |
 | restful | ~> 0.25 |
 | tls | ~> 4.0 |
 
@@ -203,7 +202,7 @@ agents = [
 
 | Name | Source | Version |
 |------|--------|---------|
-| agent\_vcluster | git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster | feat/add-vcluster-management-modules |
+| agent\_vcluster | git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster | v1.0.0 |
 | cluster\_registration | ../_shared/runai-cluster-registration | n/a |
 
 ## Resources
@@ -231,7 +230,7 @@ agents = [
 | runai\_admin\_password | Admin password for the Run:AI control plane API | `string` | n/a | yes |
 | runai\_cp\_url | URL of the external Run:AI control plane (e.g. https://runai.example.com). Used for REST API calls from terraform. | `string` | n/a | yes |
 | runai\_registry\_credentials | Base64-encoded Docker config JSON for the Run:AI registry | `string` | n/a | yes |
-| agents | List of cluster agents to register and deploy as vClusters | <pre>list(object({<br/>    name                          = string<br/>    domain                        = string<br/>    workload_domain               = optional(string, "")<br/>    node_selector_label_value     = optional(string, "")<br/>    inference_domain              = optional(string, "")<br/>    inference_service_annotations = optional(map(string), {})<br/>    ingress_service_annotations   = optional(map(string), {})<br/>    cluster_uid                   = optional(string, "")<br/>    client_secret                 = optional(string, "")<br/>  }))</pre> | `[]` | no |
+| agents | List of cluster agents to register and deploy as vClusters | <pre>list(object({<br/>    name                          = string<br/>    domain                        = string<br/>    workload_domain               = optional(string, "")<br/>    node_selector_label_value     = optional(string, "")<br/>    inference_domain              = optional(string, "")<br/>    inference_service_annotations = optional(map(string), {})<br/>    ingress_service_annotations   = optional(map(string), {})<br/>    cluster_uid                   = optional(string, "")<br/>    # Note: client_secret cannot be marked sensitive inside an object type.<br/>    # Plan output may display this value. Use an encrypted remote backend.<br/>    client_secret = optional(string, "")<br/>  }))</pre> | `[]` | no |
 | deploy\_gpu\_operator | Deploy NVIDIA GPU Operator inside agent vClusters | `bool` | `true` | no |
 | deploy\_prometheus\_operator | Deploy kube-prometheus-stack CRDs inside agent vClusters | `bool` | `true` | no |
 | enable\_inference | Enable Knative Serving for inference workloads in agent vClusters | `bool` | `true` | no |
@@ -248,8 +247,9 @@ agents = [
 | kube\_prometheus\_stack\_version | kube-prometheus-stack Helm chart version | `string` | `"72.6.2"` | no |
 | kubeconfig\_output\_dir | Directory where vCluster kubeconfig files will be written | `string` | `"."` | no |
 | node\_selector\_label\_key | Label key used to assign dedicated host nodes to agent vClusters (e.g. 'tenant') | `string` | `"tenant"` | no |
-| platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `true` | no |
+| platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `false` | no |
 | platform\_project\_name | vCluster Platform project to deploy into | `string` | `"default"` | no |
+| raw\_chart\_version | Bedag raw Helm chart version (used to deploy Knative Serving CR) | `string` | `"2.0.2"` | no |
 | runai\_admin\_email | Admin email for the Run:AI control plane API | `string` | `"admin@run.ai"` | no |
 | runai\_agent\_chart\_repo | Helm chart repository for the Run:AI cluster agent | `string` | `"https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"` | no |
 | runai\_chart\_version | Run:AI Helm chart version (used for agent) | `string` | `"2.24.18"` | no |
@@ -266,6 +266,10 @@ agents = [
 | cluster\_registrations | Map of registered cluster names to their UIDs |
 | name | Name prefix for the deployment |
 <!-- END_TF_DOCS -->
+
+## State Security
+
+This stack stores sensitive values (client secrets, TLS private keys) in the Terraform state. **Use an encrypted remote backend** (e.g. GCS with customer-managed encryption keys, S3 with SSE-KMS) to protect state at rest. Never use local state files in production.
 
 ### Agent object
 

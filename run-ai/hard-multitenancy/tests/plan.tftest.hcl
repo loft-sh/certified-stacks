@@ -260,3 +260,51 @@ run "tls_cert_for_cp_domain" {
     error_message = "TLS cert should allow digital_signature usage."
   }
 }
+
+# -----------------------------------------------------------------------------
+# User-provided TLS mode - no self-signed certs generated
+# -----------------------------------------------------------------------------
+
+run "user_provided_tls_mode" {
+  command = plan
+
+  variables {
+    name                       = "test-stack"
+    platform_url               = "https://platform.example.com"
+    platform_access_key        = "test-key"
+    runai_cp_domain            = "runai.example.com"
+    runai_admin_password       = "test-password"
+    runai_registry_credentials = "eyJ0ZXN0IjogdHJ1ZX0="
+    tls_mode                   = "user-provided"
+    user_tls_cert              = "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----"
+    user_tls_key               = "-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----"
+    user_ca_cert               = "-----BEGIN CERTIFICATE-----\nMIIBfakeCA\n-----END CERTIFICATE-----"
+    agents                     = []
+  }
+
+  # No self-signed TLS resources should be created
+  assert {
+    condition     = length(tls_private_key.ca) == 0
+    error_message = "CA private key should not be created in user-provided mode."
+  }
+
+  assert {
+    condition     = length(tls_self_signed_cert.ca) == 0
+    error_message = "CA cert should not be created in user-provided mode."
+  }
+
+  assert {
+    condition     = length(tls_private_key.cp) == 0
+    error_message = "CP private key should not be created in user-provided mode."
+  }
+
+  assert {
+    condition     = length(tls_cert_request.cp) == 0
+    error_message = "CP cert request should not be created in user-provided mode."
+  }
+
+  assert {
+    condition     = length(tls_locally_signed_cert.cp) == 0
+    error_message = "CP locally signed cert should not be created in user-provided mode."
+  }
+}

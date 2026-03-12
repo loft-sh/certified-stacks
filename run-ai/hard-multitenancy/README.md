@@ -112,9 +112,11 @@ module "hard_multitenancy" {
   # Prometheus Operator
   deploy_prometheus_operator = true
 
-  # TLS — environment CA (optional)
-  ca_cert_pem        = var.ca_cert_pem
-  ca_private_key_pem = var.ca_private_key_pem
+  # TLS — self-signed (default) or user-provided
+  tls_mode     = "self-signed"
+  # user_tls_cert = var.user_tls_cert  # required when tls_mode = "user-provided"
+  # user_tls_key  = var.user_tls_key
+  # user_ca_cert  = var.user_ca_cert
 }
 ```
 
@@ -250,7 +252,8 @@ agents = [
 |------|---------|
 | terraform | >= 1.5 |
 | helm | ~> 2.0 |
-| kubernetes | >= 2.0 |
+| kubernetes | ~> 2.0 |
+| local | ~> 2.0 |
 | random | ~> 3.0 |
 | restful | ~> 0.25 |
 | tls | ~> 4.0 |
@@ -259,6 +262,7 @@ agents = [
 
 | Name | Version |
 |------|---------|
+| local | 2.7.0 |
 | random | 3.8.1 |
 | restful | 0.25.1 |
 | tls | 4.2.1 |
@@ -267,14 +271,15 @@ agents = [
 
 | Name | Source | Version |
 |------|--------|---------|
-| agent\_vcluster | git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster | feat/add-vcluster-management-modules |
+| agent\_vcluster | git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster | v1.0.0 |
 | cp\_auth | ../_shared/runai-auth | n/a |
-| cp\_vcluster | git::https://github.com/janekbaraniewski/vcluster-terraform-modules.git//vcluster | feat/add-vcluster-management-modules |
+| cp\_vcluster | git::https://github.com/loft-sh/vcluster-terraform-modules.git//vcluster | v1.0.0 |
 
 ## Resources
 
 | Name | Type |
 |------|------|
+| [local_sensitive_file.cp_ca_cert](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/sensitive_file) | resource |
 | [random_password.runai_admin](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/password) | resource |
 | [restful_operation.cluster_creds](https://registry.terraform.io/providers/magodo/restful/latest/docs/resources/operation) | resource |
 | [restful_operation.create_cluster](https://registry.terraform.io/providers/magodo/restful/latest/docs/resources/operation) | resource |
@@ -312,13 +317,15 @@ agents = [
 | gpu\_operator\_version | NVIDIA GPU Operator Helm chart version | `string` | `"v25.10.1"` | no |
 | host\_kube\_context | Kubeconfig context to use for the host cluster. If empty, uses the current context. | `string` | `""` | no |
 | host\_kubeconfig\_path | Path to the host cluster kubeconfig | `string` | `"~/.kube/config"` | no |
+| ingress\_nginx\_chart\_version | ingress-nginx Helm chart version | `string` | `"4.12.1"` | no |
 | knative\_operator\_version | Knative Operator Helm chart version | `string` | `"1.18.0"` | no |
 | knative\_serving\_version | Knative Serving version installed by the operator | `string` | `"1.16.3"` | no |
 | kube\_prometheus\_stack\_version | kube-prometheus-stack Helm chart version | `string` | `"72.6.2"` | no |
 | kubeconfig\_output\_dir | Directory where vCluster kubeconfig files will be written | `string` | `"."` | no |
 | node\_provider\_name | Name of the NodeProvider configured in vCluster Platform for auto nodes | `string` | `""` | no |
-| platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `true` | no |
+| platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `false` | no |
 | platform\_project\_name | vCluster Platform project to deploy into | `string` | `"default"` | no |
+| raw\_chart\_version | Bedag raw Helm chart version (used to deploy Knative Serving CR) | `string` | `"2.0.2"` | no |
 | runai\_admin\_email | Admin email for initial Run:AI login. Validated by the shared runai-auth module. | `string` | `"admin@run.ai"` | no |
 | runai\_admin\_password | Admin password for initial Run:AI login. Auto-generated if not provided. | `string` | `null` | no |
 | runai\_agent\_chart\_repo | Helm chart repository for the Run:AI cluster agent | `string` | `"https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"` | no |
@@ -344,6 +351,10 @@ agents = [
 | name | Name prefix for the deployment |
 | runai\_admin\_password | Run:AI admin password (auto-generated if not provided) |
 <!-- END_TF_DOCS -->
+
+## State Security
+
+This stack stores sensitive values (admin password, TLS private keys, client secrets) in the Terraform state. **Use an encrypted remote backend** (e.g. GCS with customer-managed encryption keys, S3 with SSE-KMS) to protect state at rest. Never use local state files in production.
 
 ## Troubleshooting
 
