@@ -19,6 +19,11 @@ output "tenant_ssh_access" {
     for name, vc in module.tenant_vcluster : name => join("\n", [
       "# SSH into ${name} Slurm login node",
       "#",
+      "# The login service is exposed via LoadBalancer. If the external IP is public,",
+      "# restrict access with a firewall rule to trusted source IPs.",
+      "#",
+      "# Alternatively, use kubectl port-forward for private access:",
+      "#",
       "# 1. Start the port-forward (runs in background):",
       "kubectl --kubeconfig ${vc.kubeconfig_path} port-forward -n slurm svc/slurm-login-login 2222:22 &",
       "#",

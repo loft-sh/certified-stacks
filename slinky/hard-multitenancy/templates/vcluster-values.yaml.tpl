@@ -258,7 +258,11 @@ experimental:
                 logfile:
                   image:
                     repository: docker.io/library/alpine
-                    tag: latest
+                    tag: "3.21"
+                tolerations:
+                  - key: nvidia.com/gpu
+                    operator: Exists
+                    effect: NoSchedule
                 taintKubeNodes: false
                 useResourceLimits: true
                 updateStrategy:
@@ -286,7 +290,7 @@ experimental:
                 initconf:
                   image:
                     repository: docker.io/library/alpine
-                    tag: latest
+                    tag: "3.21"
                 service:
                   spec:
                     type: LoadBalancer
@@ -329,5 +333,5 @@ experimental:
             namespace: slurm
           values: |-
             exporter:
-              enabled: false
+              enabled: true
 %{ endif ~}

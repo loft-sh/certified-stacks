@@ -1,9 +1,15 @@
 name = "slinky"
 
 platform_url          = "https://vc-platform.example.nip.io"
-platform_access_key   = ""
 platform_project_name = "default"
 platform_insecure     = true
+
+# Secrets -- do NOT put sensitive values in this file.
+# Copy the secrets example and fill in your values:
+#
+#   cp secrets.auto.tfvars.example secrets.auto.tfvars
+#
+# Required: platform_access_key
 
 # Auto Nodes — set node_provider_name and auto_node_properties for your cloud
 # GCP example:
