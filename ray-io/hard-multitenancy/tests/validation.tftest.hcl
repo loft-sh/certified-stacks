@@ -58,11 +58,8 @@ run "accept_valid_inputs_with_tenants" {
       namespace                = "ray-test-tenant-1"
       kubeconfig_path          = "/tmp/ray-test-tenant-1-kubeconfig.yaml"
       kubeconfig_content       = "mock-kubeconfig"
-      server                   = "https://ray-test-tenant-1.example.com"
       project_namespace        = "p-default"
       access_key               = "mock-access-key"
-      helm_release_name        = "ray-test-tenant-1"
-      helm_release_namespace   = "ray-test-tenant-1"
       ready                    = true
       host                     = "https://ray-test-tenant-1.example.com"
       cluster_ca_certificate   = "mock-ca-cert"
@@ -142,11 +139,8 @@ run "two_tenants_creates_vclusters" {
       namespace                = "ray-test-tenant"
       kubeconfig_path          = "/tmp/ray-test-tenant-kubeconfig.yaml"
       kubeconfig_content       = "mock-kubeconfig"
-      server                   = "https://ray-test-tenant.example.com"
       project_namespace        = "p-default"
       access_key               = "mock-access-key"
-      helm_release_name        = "ray-test-tenant"
-      helm_release_namespace   = "ray-test-tenant"
       ready                    = true
       host                     = "https://ray-test-tenant.example.com"
       cluster_ca_certificate   = "mock-ca-cert"

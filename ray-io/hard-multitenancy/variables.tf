@@ -170,7 +170,7 @@ variable "kuberay_version" {
 }
 
 variable "ray_version" {
-  description = "Ray container image tag (e.g. '2.54.0'). GPU workers automatically use the '-gpu' suffix."
+  description = "Ray container image tag (e.g. '2.54.0')"
   type        = string
   default     = "2.54.0"
 }

@@ -98,7 +98,7 @@ kubectl apply -f my-rayjob.yaml
 | `node_groups` | Node groups configuration (static + dynamic) | `object` | See variables.tf | no |
 | `tenants` | List of tenants with Ray worker config | `list(object)` | `[]` | no |
 | `kuberay_version` | KubeRay Helm chart version | `string` | `"1.5.1"` | no |
-| `ray_version` | Ray image tag (GPU workers auto-append `-gpu`) | `string` | `"2.54.0"` | no |
+| `ray_version` | Ray container image tag (e.g. '2.54.0') | `string` | `"2.54.0"` | no |
 | `deploy_default_cluster` | Deploy a default RayCluster per tenant | `bool` | `true` | no |
 | `deploy_gpu_operator` | Deploy NVIDIA GPU Operator | `bool` | `true` | no |
 | `gpu_operator_version` | GPU Operator Helm chart version | `string` | `"v25.10.1"` | no |
@@ -182,7 +182,7 @@ No resources.
 | platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `false` | no |
 | platform\_project\_name | vCluster Platform project to deploy into | `string` | `"default"` | no |
 | ray\_image | Ray container image repository | `string` | `"rayproject/ray"` | no |
-| ray\_version | Ray container image tag (e.g. '2.54.0'). GPU workers automatically use the '-gpu' suffix. | `string` | `"2.54.0"` | no |
+| ray\_version | Ray container image tag (e.g. '2.54.0') | `string` | `"2.54.0"` | no |
 | skip\_kubeconfig | Skip writing vCluster kubeconfig files to disk | `bool` | `false` | no |
 | tenants | List of tenants, each deployed as an isolated vCluster with private nodes and a dedicated KubeRay operator | <pre>list(object({<br/>    name               = string<br/>    worker_replicas    = optional(number, 1)<br/>    gpu_per_worker     = optional(number, 1)<br/>    enable_autoscaling = optional(bool, false)<br/>    max_workers        = optional(number, 5)<br/>    node_groups = optional(object({<br/>      static = optional(list(object({<br/>        name       = string<br/>        quantity   = number<br/>        node_types = optional(list(string), [])<br/>        labels     = optional(map(string), {})<br/>        taints     = optional(list(object({ key = string, value = optional(string, ""), effect = string })), [])<br/>      })), [])<br/>      dynamic = optional(list(object({<br/>        name       = string<br/>        node_types = optional(list(string), [])<br/>        labels     = optional(map(string), {})<br/>        taints     = optional(list(object({ key = string, value = optional(string, ""), effect = string })), [])<br/>        limits     = optional(object({ nodes = optional(number), cpu = optional(number), memory = optional(string) }))<br/>      })), [])<br/>    }))<br/>    head_service_annotations    = optional(map(string), {})<br/>    ingress_service_annotations = optional(map(string), {})<br/>  }))</pre> | `[]` | no |
 | vcluster\_chart\_version | vCluster Helm chart version | `string` | `"0.31.0"` | no |

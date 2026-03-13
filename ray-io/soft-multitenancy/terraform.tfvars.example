@@ -9,14 +9,20 @@ ingress_ip = "10.0.0.100"
 # cluster_url = "https://ray-tenant-1.example.com"
 
 # Path to the host cluster kubeconfig (default: ~/.kube/config)
-# kubeconfig_path = "~/.kube/config"
+# host_kubeconfig_path = "~/.kube/config"
 
 # ---------------------------------------------------------------------------
 # vCluster Platform
 # ---------------------------------------------------------------------------
 
 platform_url        = "https://platform.example.com"
-platform_access_key = "loft-access-key-xxxxx"
+
+# Secrets -- do NOT put sensitive values in this file.
+# Copy the secrets example and fill in your values:
+#
+#   cp secrets.auto.tfvars.example secrets.auto.tfvars
+#
+# Required: platform_access_key
 
 # Skip TLS verification for the vCluster Platform (default: true)
 # platform_insecure = true

@@ -105,7 +105,7 @@ Key characteristics:
 | `name` | Name for the vCluster and Ray.io tenant | `string` | — | yes |
 | `ingress_ip` | IP address of the ingress controller for nip.io URL generation | `string` | — | yes |
 | `cluster_url` | Explicit cluster URL (overrides auto-derived nip.io URL) | `string` | `""` | no |
-| `kubeconfig_path` | Path to the host cluster kubeconfig | `string` | `~/.kube/config` | no |
+| `host_kubeconfig_path` | Path to the host cluster kubeconfig | `string` | `~/.kube/config` | no |
 | `platform_url` | URL of the vCluster Platform | `string` | — | yes |
 | `platform_access_key` | Access key for the vCluster Platform API | `string` | — | yes |
 | `platform_insecure` | Skip TLS verification for the vCluster Platform | `bool` | `false` | no |
@@ -196,8 +196,8 @@ The tenant receives `kubeconfig_path` and `cluster_url`. Using the vCluster kube
 | deploy\_kuberay\_operator | Deploy the shared KubeRay operator on the host cluster. Set to false if already installed or managed separately. | `bool` | `true` | no |
 | gpu\_operator\_version | NVIDIA GPU Operator Helm chart version | `string` | `"v24.9.1"` | no |
 | host\_kube\_context | Kubernetes context to use from the kubeconfig (empty = current context) | `string` | `""` | no |
-| install\_gpu\_operator | Deploy the NVIDIA GPU Operator on the host cluster (shared across tenants) | `bool` | `false` | no |
-| kubeconfig\_path | Path to the host cluster kubeconfig file | `string` | `"~/.kube/config"` | no |
+| host\_kubeconfig\_path | Path to the host cluster kubeconfig file | `string` | `"~/.kube/config"` | no |
+| install\_gpu\_operator | Deploy the NVIDIA GPU Operator inside the vCluster | `bool` | `false` | no |
 | kuberay\_operator\_version | KubeRay operator Helm chart version | `string` | `"1.5.1"` | no |
 | platform\_insecure | Skip TLS certificate verification when connecting to the vCluster Platform | `bool` | `false` | no |
 | platform\_project\_name | vCluster Platform project in which to create the vCluster | `string` | `"default"` | no |

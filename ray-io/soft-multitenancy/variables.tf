@@ -26,7 +26,7 @@ variable "cluster_url" {
   default     = ""
 }
 
-variable "kubeconfig_path" {
+variable "host_kubeconfig_path" {
   description = "Path to the host cluster kubeconfig file"
   type        = string
   default     = "~/.kube/config"
@@ -96,7 +96,7 @@ variable "kuberay_operator_version" {
 # ---------------------------------------------------------------------------
 
 variable "install_gpu_operator" {
-  description = "Deploy the NVIDIA GPU Operator on the host cluster (shared across tenants)"
+  description = "Deploy the NVIDIA GPU Operator inside the vCluster"
   type        = bool
   default     = false
 }

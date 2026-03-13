@@ -17,11 +17,8 @@ override_module {
     namespace                = "test-soft-ns"
     kubeconfig_path          = "/tmp/test-soft-kubeconfig.yaml"
     kubeconfig_content       = "mock-kubeconfig"
-    server                   = "https://test-soft.example.com"
     project_namespace        = "p-default"
     access_key               = "mock-access-key"
-    helm_release_name        = "test-soft"
-    helm_release_namespace   = "test-soft-ns"
     ready                    = true
     host                     = "https://test-soft.example.com"
     cluster_ca_certificate   = "mock-ca-cert"

@@ -151,8 +151,6 @@ experimental:
               enabled: true
             devicePlugin:
               enabled: true
-            dcgm:
-              enabled: true
             dcgmExporter:
               enabled: true
             migManager:
@@ -227,9 +225,9 @@ experimental:
 %{ if enable_autoscaling ~}
               enableInTreeAutoscaling: true
 %{ endif ~}
+%{ if length(head_service_annotations) > 0 ~}
             headService:
               metadata:
-%{ if length(head_service_annotations) > 0 ~}
                 annotations:
 %{ for k, v in head_service_annotations ~}
                   ${k}: "${v}"
@@ -249,6 +247,10 @@ experimental:
                   cpu: "2"
                   memory: "4Gi"
                   nvidia.com/gpu: "${gpu_per_worker}"
+              tolerations:
+                - key: nvidia.com/gpu
+                  operator: Exists
+                  effect: NoSchedule
 %{ else ~}
             worker:
               replicas: ${worker_replicas}

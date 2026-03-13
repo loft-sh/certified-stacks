@@ -3,13 +3,13 @@
 # ---------------------------------------------------------------------------
 
 provider "kubernetes" {
-  config_path    = var.kubeconfig_path
+  config_path    = var.host_kubeconfig_path
   config_context = var.host_kube_context != "" ? var.host_kube_context : null
 }
 
 provider "helm" {
   kubernetes {
-    config_path    = var.kubeconfig_path
+    config_path    = var.host_kubeconfig_path
     config_context = var.host_kube_context != "" ? var.host_kube_context : null
   }
 }

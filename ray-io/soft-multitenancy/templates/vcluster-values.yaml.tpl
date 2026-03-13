@@ -64,5 +64,23 @@ experimental:
           release:
             name: gpu-operator
             namespace: gpu-operator
-          values: ""
+          values: |-
+            driver:
+              enabled: false
+            toolkit:
+              enabled: true
+            devicePlugin:
+              enabled: true
+            dcgmExporter:
+              enabled: true
+            migManager:
+              enabled: false
+            nodeStatusExporter:
+              enabled: true
+            nfd:
+              enabled: true
+            gfd:
+              enabled: true
+            operator:
+              defaultRuntime: containerd
 %{ endif ~}
