@@ -168,6 +168,7 @@ variable "skypilot_version" {
   default     = "0.11.2"
 }
 
+# NOTE: skypilot_image tag should stay in sync with skypilot_version above.
 variable "skypilot_image" {
   description = "SkyPilot API server container image (set to pin a stable release)"
   type        = string

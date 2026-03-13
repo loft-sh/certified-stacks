@@ -480,7 +480,7 @@ YAML
 
   # Extract job ID
   local JOB_ID
-  JOB_ID=$(echo "$JOB_OUTPUT" | grep -oP 'Job ID: \K\d+' || echo "")
+  JOB_ID=$(echo "$JOB_OUTPUT" | grep -oE 'Job ID: [0-9]+' | sed 's/Job ID: //' || echo "")
   if [[ -z "$JOB_ID" ]]; then
     # Try to find from jobs queue
     JOB_ID=$(${SKY_CMD} jobs queue --no-show-header 2>/dev/null | grep "$NAME" | awk '{print $1}' | head -1 || echo "")
@@ -663,7 +663,7 @@ YAML
   pass "Serve endpoint is READY"
 
   # Get the endpoint URL
-  local ENDPOINT_URL
+  local ENDPOINT_URL PF_PID=""
   ENDPOINT_URL=$(${SKY_CMD} serve status --no-show-header 2>/dev/null | grep "$NAME" | awk '{print $NF}' || echo "")
   if [[ -z "$ENDPOINT_URL" ]]; then
     log "  Could not determine endpoint URL from serve status"
@@ -671,7 +671,7 @@ YAML
     ENDPOINT_URL="http://localhost:18080"
     # Start port-forward as fallback
     ${KCTL} port-forward svc/skypilot-serve -n "$SKYPILOT_NAMESPACE" 18080:80 &>/dev/null &
-    local PF_PID=$!
+    PF_PID=$!
     sleep 5
   fi
   log "  Endpoint: ${ENDPOINT_URL}"
@@ -745,7 +745,7 @@ YAML
   fi
 
   # Kill port-forward if we started one
-  kill $PF_PID 2>/dev/null || true
+  [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
 
   if [[ "$CLEANUP" == "true" ]]; then
     ${SKY_CMD} serve down "$NAME" -y 2>/dev/null || true
