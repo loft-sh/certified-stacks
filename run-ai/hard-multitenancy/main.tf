@@ -11,7 +11,7 @@ provider "helm" {
 }
 
 # ---------------------------------------------------------------------------
-# TLS – CA + leaf certificate chain for the Run:AI control-plane ingress
+# TLS – CA + leaf certificate chain for the NVIDIA Run:ai control-plane ingress
 # ---------------------------------------------------------------------------
 
 resource "tls_private_key" "ca" {
@@ -24,7 +24,7 @@ resource "tls_self_signed_cert" "ca" {
   count           = var.tls_mode == "self-signed" ? 1 : 0
   private_key_pem = tls_private_key.ca[0].private_key_pem
   subject {
-    common_name = "Run:AI Self-Signed CA"
+    common_name = "NVIDIA Run:ai Self-Signed CA"
   }
   is_ca_certificate     = true
   validity_period_hours = 87600 # 10 years
@@ -161,7 +161,7 @@ resource "tls_locally_signed_cert" "agent_domain" {
 }
 
 # ---------------------------------------------------------------------------
-# REST API – authenticate against the Run:AI control plane
+# REST API – authenticate against the NVIDIA Run:ai control plane
 # ---------------------------------------------------------------------------
 
 provider "restful" {

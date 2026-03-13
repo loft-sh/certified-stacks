@@ -1,5 +1,5 @@
-# Shared Run:ai authentication module.
-# Obtains a bearer token from the Run:ai control plane.
+# Shared NVIDIA Run:ai authentication module.
+# Obtains a bearer token from the NVIDIA Run:ai control plane.
 # The caller must configure the restful provider (base_url, TLS, retries).
 
 resource "restful_operation" "auth" {

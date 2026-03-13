@@ -1,7 +1,7 @@
-# Run:ai Cluster Registration Module
+# NVIDIA Run:ai Cluster Registration Module
 
-Registers a cluster with an external Run:ai control plane via the REST API and
-retrieves the credentials needed to deploy the Run:ai cluster agent.
+Registers a cluster with an external NVIDIA Run:ai control plane via the REST API and
+retrieves the credentials needed to deploy the NVIDIA Run:ai cluster agent.
 
 ## How it works
 
@@ -45,11 +45,11 @@ retrieves the credentials needed to deploy the Run:ai cluster agent.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
-| api\_password | Run:ai API user password | `string` | n/a | yes |
-| cluster\_name | Name for the cluster to register with Run:ai | `string` | n/a | yes |
+| api\_password | NVIDIA Run:ai API user password | `string` | n/a | yes |
+| cluster\_name | Name for the cluster to register with NVIDIA Run:ai | `string` | n/a | yes |
 | cluster\_url | External URL for the cluster (e.g. https://agent-1.example.com) | `string` | n/a | yes |
-| api\_user | Run:ai API user email for authentication | `string` | `"admin@run.ai"` | no |
-| runai\_cluster\_agent\_version | Run:ai cluster agent version for credential retrieval | `string` | `"2.24.18"` | no |
+| api\_user | NVIDIA Run:ai API user email for authentication | `string` | `"admin@run.ai"` | no |
+| runai\_cluster\_agent\_version | NVIDIA Run:ai cluster agent version for credential retrieval | `string` | `"2.24.18"` | no |
 
 ## Outputs
 

@@ -1,8 +1,8 @@
 # =============================================================================
-# Run:ai Project Module
+# NVIDIA Run:ai Project Module
 # =============================================================================
 #
-# Creates a project in Run:ai via REST API.
+# Creates a project in NVIDIA Run:ai via REST API.
 # Uses the restful provider for all API interactions.
 #
 # The caller must pass in a configured restful provider.

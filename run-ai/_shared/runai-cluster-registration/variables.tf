@@ -1,17 +1,17 @@
 variable "api_user" {
-  description = "Run:ai API user email for authentication"
+  description = "NVIDIA Run:ai API user email for authentication"
   type        = string
   default     = "admin@run.ai"
 }
 
 variable "api_password" {
-  description = "Run:ai API user password"
+  description = "NVIDIA Run:ai API user password"
   type        = string
   sensitive   = true
 }
 
 variable "cluster_name" {
-  description = "Name for the cluster to register with Run:ai"
+  description = "Name for the cluster to register with NVIDIA Run:ai"
   type        = string
 
   validation {
@@ -31,7 +31,7 @@ variable "cluster_url" {
 }
 
 variable "runai_cluster_agent_version" {
-  description = "Run:ai cluster agent version for credential retrieval"
+  description = "NVIDIA Run:ai cluster agent version for credential retrieval"
   type        = string
   default     = "2.24.18"
 }

@@ -9,7 +9,7 @@ kubeconfig_output_dir = "."
 platform_url          = "https://platform.example.com"
 platform_project_name = "default"
 
-# Run:AI Control Plane
+# NVIDIA Run:ai Control Plane
 runai_cp_domain   = "runai-cp.10.0.0.1.nip.io"
 runai_admin_email = "admin@run.ai"
 

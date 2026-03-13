@@ -4,7 +4,7 @@ output "name" {
 }
 
 output "control_plane_url" {
-  description = "URL of the Run:AI control plane"
+  description = "URL of the NVIDIA Run:ai control plane"
   value       = local.cp_url
 }
 
@@ -29,7 +29,7 @@ output "agent_vclusters" {
 }
 
 output "runai_admin_password" {
-  description = "Run:AI admin password (auto-generated if not provided)"
+  description = "NVIDIA Run:ai admin password (auto-generated if not provided)"
   value       = local.runai_admin_password
   sensitive   = true
 }

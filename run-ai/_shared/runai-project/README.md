@@ -1,6 +1,6 @@
-# Run:ai Project Module
+# NVIDIA Run:ai Project Module
 
-Creates a Run:ai project within a registered cluster via the REST API.
+Creates a NVIDIA Run:ai project within a registered cluster via the REST API.
 
 ## How it works
 
@@ -44,17 +44,17 @@ Creates a Run:ai project within a registered cluster via the REST API.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
-| api\_password | Run:ai API user password | `string` | n/a | yes |
-| cluster\_uid | UUID of the Run:ai cluster to create the project in | `string` | n/a | yes |
-| project\_name | Name of the Run:ai project to create | `string` | n/a | yes |
-| api\_user | Run:ai API user email for authentication | `string` | `"admin@run.ai"` | no |
+| api\_password | NVIDIA Run:ai API user password | `string` | n/a | yes |
+| cluster\_uid | UUID of the NVIDIA Run:ai cluster to create the project in | `string` | n/a | yes |
+| project\_name | Name of the NVIDIA Run:ai project to create | `string` | n/a | yes |
+| api\_user | NVIDIA Run:ai API user email for authentication | `string` | `"admin@run.ai"` | no |
 
 ## Outputs
 
 | Name | Description |
 |------|-------------|
 | department\_id | ID of the department the project belongs to |
-| project\_id | ID of the created Run:ai project |
+| project\_id | ID of the created NVIDIA Run:ai project |
 <!-- END_TF_DOCS -->
 
 ## Usage example

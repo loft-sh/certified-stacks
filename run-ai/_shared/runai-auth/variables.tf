@@ -1,5 +1,5 @@
 variable "api_user" {
-  description = "Run:ai API user email for authentication"
+  description = "NVIDIA Run:ai API user email for authentication"
   type        = string
   default     = "admin@run.ai"
 
@@ -10,7 +10,7 @@ variable "api_user" {
 }
 
 variable "api_password" {
-  description = "Run:ai API user password"
+  description = "NVIDIA Run:ai API user password"
   type        = string
   sensitive   = true
 }

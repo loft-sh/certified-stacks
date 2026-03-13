@@ -1,5 +1,5 @@
 output "project_id" {
-  description = "ID of the created Run:ai project"
+  description = "ID of the created NVIDIA Run:ai project"
   value       = restful_operation.project.output.id
 }
 

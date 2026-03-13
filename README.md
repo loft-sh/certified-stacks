@@ -26,7 +26,7 @@ A Certified Stack is a tested, versioned, one-command deployment of a vCluster p
 
 | Stack | Components | Tenancy Models |
 |-------|-----------|----------------|
-| **Run:ai on vCluster** | vCluster, GPU Operator, Run:ai | Hard isolation, Soft isolation |
+| **NVIDIA Run:ai on vCluster** | vCluster, GPU Operator, NVIDIA Run:ai | Hard isolation, Soft isolation |
 | **Slinky on vCluster** | vCluster, GPU Operator, Slinky | Hard isolation, Soft isolation |
 | **Ray on vCluster** | vCluster, GPU Operator, Ray | Hard isolation |
 | **SkyPilot on vCluster** | vCluster, GPU Operator, SkyPilot | Hard isolation |

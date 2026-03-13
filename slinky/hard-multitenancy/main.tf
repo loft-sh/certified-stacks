@@ -14,7 +14,7 @@ provider "helm" {
 # Tenant vClusters – one per tenant, each with private auto-nodes and a
 # complete Slinky (Slurm) deployment for full isolation.
 #
-# Unlike Run:AI, Slinky has no separate control-plane / agent cluster model.
+# Unlike NVIDIA Run:ai, Slinky has no separate control-plane / agent cluster model.
 # All Slurm components (slurmctld, slurmdbd, slurmd, login, slurmrestd) run
 # within a single cluster.  Hard multi-tenancy is achieved by giving each
 # tenant its own vCluster with dedicated auto-provisioned GPU nodes.

@@ -1,6 +1,6 @@
-# Run:AI Soft Multitenancy Stack
+# NVIDIA Run:ai Soft Multitenancy Stack
 
-Deploys Run:AI cluster agents inside vClusters with **soft isolation**. In this model a single Run:AI control plane (external) is shared across tenants while each tenant gets a dedicated vCluster with its own Kubernetes API, Run:AI agent, and workload scheduling — all running on shared host cluster nodes.
+Deploys NVIDIA Run:ai cluster agents inside vClusters with **soft isolation**. In this model a single NVIDIA Run:ai control plane (external) is shared across tenants while each tenant gets a dedicated vCluster with its own Kubernetes API, NVIDIA Run:ai agent, and workload scheduling — all running on shared host cluster nodes.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ Host Cluster (GKE / EKS / etc.)
   │     └── Nodes assigned to tenant-b vCluster
   │
   ├── vCluster "soft-mt-tenant-a"   (namespace: soft-mt-tenant-a)
-  │     ├── Run:AI Cluster Agent
+  │     ├── NVIDIA Run:ai Cluster Agent
   │     ├── GPU Operator (discovers host GPUs via node sync)
   │     ├── Prometheus Operator (CRDs)
   │     ├── Knative Serving (inference)
@@ -28,7 +28,7 @@ Host Cluster (GKE / EKS / etc.)
 
 Key characteristics:
 
-- **Shared control plane** — the Run:AI control plane is external (SaaS or self-hosted on the same host cluster); this stack only registers agents against it.
+- **Shared control plane** — the NVIDIA Run:ai control plane is external (SaaS or self-hosted on the same host cluster); this stack only registers agents against it.
 - **Shared host nodes** — tenants run on shared GKE/EKS node pools. Node assignment is controlled via Kubernetes labels and vCluster node syncing.
 - **Isolated API server** — each tenant gets its own vCluster with a separate Kubernetes API, RBAC, and namespace hierarchy.
 - **GPU discovery via sync** — the GPU Operator inside each vCluster discovers host GPUs through synced node objects.
@@ -41,10 +41,10 @@ The soft-multitenancy stack runs vClusters directly on shared host nodes. This r
 |---|---|
 | **GKE/EKS cluster** | With GPU node pools and ingress controller |
 | **vCluster Platform** | Running and accessible, with an access key |
-| **Run:AI control plane** | External (SaaS or self-hosted), with admin API credentials |
+| **NVIDIA Run:ai control plane** | External (SaaS or self-hosted), with admin API credentials |
 | **Labeled node pools** | Host nodes must carry the tenant label matching each agent's `node_selector_label_value` |
 | **NVIDIA RuntimeClass** | `nvidia` RuntimeClass on the host (must be created as part of host setup) |
-| **Run:AI registry credentials** | Base64-encoded Docker config JSON |
+| **NVIDIA Run:ai registry credentials** | Base64-encoded Docker config JSON |
 
 ### Node labeling
 
@@ -98,7 +98,7 @@ module "soft_multitenancy" {
   # vCluster versions
   vcluster_chart_version = "0.31.0"
 
-  # Run:AI Control Plane (external / shared)
+  # NVIDIA Run:ai Control Plane (external / shared)
   runai_cp_url               = var.runai_cp_url
   runai_admin_email          = "admin@loft.sh"
   runai_admin_password       = var.runai_admin_password
@@ -151,8 +151,8 @@ terraform apply
 ```
 
 The stack will:
-1. Register each agent with the Run:AI control plane via REST API
-2. Create a vCluster per agent with GPU operator, Prometheus CRDs, Knative, and the Run:AI agent
+1. Register each agent with the NVIDIA Run:ai control plane via REST API
+2. Create a vCluster per agent with GPU operator, Prometheus CRDs, Knative, and the NVIDIA Run:ai agent
 3. Write kubeconfig files for each vCluster
 
 ### 3. Access tenant vClusters
@@ -168,7 +168,7 @@ vcluster connect soft-mt-tenant-a
 
 ### Pre-provided cluster credentials
 
-If you already registered clusters with Run:AI (e.g. via the UI), skip auto-registration by providing credentials directly:
+If you already registered clusters with NVIDIA Run:ai (e.g. via the UI), skip auto-registration by providing credentials directly:
 
 ```hcl
 agents = [
@@ -227,9 +227,9 @@ agents = [
 | name | Name prefix for the deployment (e.g. 'soft-mt') | `string` | n/a | yes |
 | platform\_access\_key | Access key for the vCluster Platform API | `string` | n/a | yes |
 | platform\_url | URL of the vCluster Platform (e.g. https://platform.example.com) | `string` | n/a | yes |
-| runai\_admin\_password | Admin password for the Run:AI control plane API | `string` | n/a | yes |
-| runai\_cp\_url | URL of the external Run:AI control plane (e.g. https://runai.example.com). Used for REST API calls from terraform. | `string` | n/a | yes |
-| runai\_registry\_credentials | Base64-encoded Docker config JSON for the Run:AI registry | `string` | n/a | yes |
+| runai\_admin\_password | Admin password for the NVIDIA Run:ai control plane API | `string` | n/a | yes |
+| runai\_cp\_url | URL of the external NVIDIA Run:ai control plane (e.g. https://runai.example.com). Used for REST API calls from terraform. | `string` | n/a | yes |
+| runai\_registry\_credentials | Base64-encoded Docker config JSON for the NVIDIA Run:ai registry | `string` | n/a | yes |
 | agents | List of cluster agents to register and deploy as vClusters | <pre>list(object({<br/>    name                          = string<br/>    domain                        = string<br/>    workload_domain               = optional(string, "")<br/>    node_selector_label_value     = optional(string, "")<br/>    inference_domain              = optional(string, "")<br/>    inference_service_annotations = optional(map(string), {})<br/>    ingress_service_annotations   = optional(map(string), {})<br/>    cluster_uid                   = optional(string, "")<br/>    # Note: client_secret cannot be marked sensitive inside an object type.<br/>    # Plan output may display this value. Use an encrypted remote backend.<br/>    client_secret = optional(string, "")<br/>  }))</pre> | `[]` | no |
 | deploy\_gpu\_operator | Deploy NVIDIA GPU Operator inside agent vClusters | `bool` | `true` | no |
 | deploy\_prometheus\_operator | Deploy kube-prometheus-stack CRDs inside agent vClusters | `bool` | `true` | no |
@@ -250,11 +250,11 @@ agents = [
 | platform\_insecure | Skip TLS verification for the vCluster Platform API | `bool` | `false` | no |
 | platform\_project\_name | vCluster Platform project to deploy into | `string` | `"default"` | no |
 | raw\_chart\_version | Bedag raw Helm chart version (used to deploy Knative Serving CR) | `string` | `"2.0.2"` | no |
-| runai\_admin\_email | Admin email for the Run:AI control plane API | `string` | `"admin@run.ai"` | no |
-| runai\_agent\_chart\_repo | Helm chart repository for the Run:AI cluster agent | `string` | `"https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"` | no |
-| runai\_chart\_version | Run:AI Helm chart version (used for agent) | `string` | `"2.24.18"` | no |
-| runai\_cp\_ca\_cert | Base64-encoded PEM CA certificate for the Run:AI control plane (required when using self-signed TLS) | `string` | `""` | no |
-| runai\_cp\_insecure | Skip TLS verification for the Run:AI control plane API | `bool` | `false` | no |
+| runai\_admin\_email | Admin email for the NVIDIA Run:ai control plane API | `string` | `"admin@run.ai"` | no |
+| runai\_agent\_chart\_repo | Helm chart repository for the NVIDIA Run:ai cluster agent | `string` | `"https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"` | no |
+| runai\_chart\_version | NVIDIA Run:ai Helm chart version (used for agent) | `string` | `"2.24.18"` | no |
+| runai\_cp\_ca\_cert | Base64-encoded PEM CA certificate for the NVIDIA Run:ai control plane (required when using self-signed TLS) | `string` | `""` | no |
+| runai\_cp\_insecure | Skip TLS verification for the NVIDIA Run:ai control plane API | `bool` | `false` | no |
 | skip\_kubeconfig | Skip writing vCluster kubeconfig files to disk | `bool` | `false` | no |
 | vcluster\_chart\_version | vCluster Helm chart version | `string` | `"0.31.0"` | no |
 
@@ -306,7 +306,7 @@ This is the most common issue. The vCluster syncs nodes from the host using a la
 
 ### Agent not connecting to control plane
 
-1. Check the Run:AI agent pods: `kubectl --kubeconfig ./<name>-<agent>-kubeconfig.yaml get pods -n runai`
+1. Check the NVIDIA Run:ai agent pods: `kubectl --kubeconfig ./<name>-<agent>-kubeconfig.yaml get pods -n runai`
 2. If using self-signed TLS on the CP, ensure `runai_cp_ca_cert` is set correctly
 3. Verify the CP URL is reachable from the vCluster: `vcluster connect <name>-<agent> -- curl -sk <runai_cp_url>/api/v1/health`
 

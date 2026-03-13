@@ -10,13 +10,13 @@ platform_url          = "https://platform.example.com"
 platform_access_key   = "your-platform-access-key"
 platform_project_name = "default"
 
-# Run:AI Control Plane (external)
+# NVIDIA Run:ai Control Plane (external)
 runai_cp_url               = "https://runai.example.com"
 runai_admin_email          = "admin@run.ai"
 runai_admin_password       = "your-admin-password"
 runai_registry_credentials = "eyJ..." # base64-encoded Docker config JSON
 
-# Optional: CA cert for self-signed TLS on the Run:AI CP
+# Optional: CA cert for self-signed TLS on the NVIDIA Run:ai CP
 # runai_cp_ca_cert = "base64-encoded-ca-pem"
 
 # Agents – one vCluster per agent, with dedicated host nodes via label selector.
@@ -49,7 +49,7 @@ agents = [
 # Node selector label key (default: "tenant")
 # node_selector_label_key = "tenant"
 
-# Whether to create a Run:AI project per agent cluster (default: true)
+# Whether to create a NVIDIA Run:ai project per agent cluster (default: true)
 # create_project = true
 
 # High availability (default: false)

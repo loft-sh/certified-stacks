@@ -65,11 +65,11 @@ variable "vcluster_chart_version" {
 }
 
 # ---------------------------------------------------------------------------
-# Run:AI Control Plane (external)
+# NVIDIA Run:ai Control Plane (external)
 # ---------------------------------------------------------------------------
 
 variable "runai_cp_url" {
-  description = "URL of the external Run:AI control plane (e.g. https://runai.example.com). Used for REST API calls from terraform."
+  description = "URL of the external NVIDIA Run:ai control plane (e.g. https://runai.example.com). Used for REST API calls from terraform."
   type        = string
   validation {
     condition     = can(regex("^https?://", var.runai_cp_url))
@@ -78,7 +78,7 @@ variable "runai_cp_url" {
 }
 
 variable "runai_admin_email" {
-  description = "Admin email for the Run:AI control plane API"
+  description = "Admin email for the NVIDIA Run:ai control plane API"
   type        = string
   default     = "admin@run.ai"
   validation {
@@ -88,38 +88,38 @@ variable "runai_admin_email" {
 }
 
 variable "runai_admin_password" {
-  description = "Admin password for the Run:AI control plane API"
+  description = "Admin password for the NVIDIA Run:ai control plane API"
   type        = string
   sensitive   = true
 }
 
 variable "runai_chart_version" {
-  description = "Run:AI Helm chart version (used for agent)"
+  description = "NVIDIA Run:ai Helm chart version (used for agent)"
   type        = string
   default     = "2.24.18"
 }
 
 variable "runai_agent_chart_repo" {
-  description = "Helm chart repository for the Run:AI cluster agent"
+  description = "Helm chart repository for the NVIDIA Run:ai cluster agent"
   type        = string
   default     = "https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"
 }
 
 variable "runai_registry_credentials" {
-  description = "Base64-encoded Docker config JSON for the Run:AI registry"
+  description = "Base64-encoded Docker config JSON for the NVIDIA Run:ai registry"
   type        = string
   sensitive   = true
 }
 
 variable "runai_cp_ca_cert" {
-  description = "Base64-encoded PEM CA certificate for the Run:AI control plane (required when using self-signed TLS)"
+  description = "Base64-encoded PEM CA certificate for the NVIDIA Run:ai control plane (required when using self-signed TLS)"
   type        = string
   default     = ""
   sensitive   = true
 }
 
 variable "runai_cp_insecure" {
-  description = "Skip TLS verification for the Run:AI control plane API"
+  description = "Skip TLS verification for the NVIDIA Run:ai control plane API"
   type        = bool
   default     = false
 }

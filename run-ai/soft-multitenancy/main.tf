@@ -52,7 +52,7 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# TLS – self-signed certificates for workload domains (Run:AI ingress-nginx)
+# TLS – self-signed certificates for workload domains (NVIDIA Run:ai ingress-nginx)
 # ---------------------------------------------------------------------------
 
 locals {
@@ -69,7 +69,7 @@ resource "tls_self_signed_cert" "workload_domain_ca" {
   count           = local.has_workload_domain ? 1 : 0
   private_key_pem = tls_private_key.workload_domain_ca[0].private_key_pem
   subject {
-    common_name = "Run:AI Workload Domain CA"
+    common_name = "NVIDIA Run:ai Workload Domain CA"
   }
   is_ca_certificate     = true
   validity_period_hours = 87600
@@ -148,7 +148,7 @@ resource "tls_locally_signed_cert" "inference_domain" {
 }
 
 # ---------------------------------------------------------------------------
-# Cluster registration – register each agent with the Run:AI control plane
+# Cluster registration – register each agent with the NVIDIA Run:ai control plane
 # ---------------------------------------------------------------------------
 
 module "cluster_registration" {
@@ -194,7 +194,7 @@ module "agent_vcluster" {
     high_availability = var.high_availability
     ha_replicas       = var.ha_replicas
 
-    # Run:AI cluster credentials
+    # NVIDIA Run:ai cluster credentials
     cluster_uid = local.agent_credentials[each.key].cluster_uid
     # client_secret is passed into the Helm values template as plaintext; it is
     # not a user-facing secret — it authenticates the agent back to the CP.

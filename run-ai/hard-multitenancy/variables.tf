@@ -137,7 +137,7 @@ variable "agent_node_groups" {
 }
 
 variable "runai_cp_domain" {
-  description = "Domain name for the Run:AI control plane (e.g. runai.10.0.0.1.nip.io)"
+  description = "Domain name for the NVIDIA Run:ai control plane (e.g. runai.10.0.0.1.nip.io)"
   type        = string
   validation {
     condition     = can(regex("^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$", var.runai_cp_domain))
@@ -146,45 +146,45 @@ variable "runai_cp_domain" {
 }
 
 variable "runai_chart_version" {
-  description = "Run:AI Helm chart version (used for both CP and agent)"
+  description = "NVIDIA Run:ai Helm chart version (used for both CP and agent)"
   type        = string
   default     = "2.24.18"
 }
 
 variable "runai_cp_chart_repo" {
-  description = "Helm chart repository for the Run:AI control plane"
+  description = "Helm chart repository for the NVIDIA Run:ai control plane"
   type        = string
   default     = "https://runai.jfrog.io/artifactory/cp-charts-prod"
 }
 
 variable "runai_agent_chart_repo" {
-  description = "Helm chart repository for the Run:AI cluster agent"
+  description = "Helm chart repository for the NVIDIA Run:ai cluster agent"
   type        = string
   default     = "https://runai.jfrog.io/artifactory/api/helm/run-ai-charts"
 }
 
 variable "runai_admin_email" {
-  description = "Admin email for initial Run:AI login. Validated by the shared runai-auth module."
+  description = "Admin email for initial NVIDIA Run:ai login. Validated by the shared runai-auth module."
   type        = string
   default     = "admin@run.ai"
 }
 
 variable "runai_admin_password" {
-  description = "Admin password for initial Run:AI login. Auto-generated if not provided."
+  description = "Admin password for initial NVIDIA Run:ai login. Auto-generated if not provided."
   type        = string
   default     = null
   sensitive   = true
 }
 
 variable "runai_registry_credentials" {
-  description = "Base64-encoded Docker config JSON for the Run:AI registry"
+  description = "Base64-encoded Docker config JSON for the NVIDIA Run:ai registry"
   type        = string
   sensitive   = true
 }
 
 
 variable "cp_health_check_retries" {
-  description = "Number of retries when waiting for the Run:AI API to become healthy"
+  description = "Number of retries when waiting for the NVIDIA Run:ai API to become healthy"
   type        = number
   default     = 180
 }

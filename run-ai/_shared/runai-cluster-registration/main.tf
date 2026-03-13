@@ -1,8 +1,8 @@
 # =============================================================================
-# Run:ai Cluster Registration Module
+# NVIDIA Run:ai Cluster Registration Module
 # =============================================================================
 #
-# Registers a cluster with the Run:ai control plane via REST API.
+# Registers a cluster with the NVIDIA Run:ai control plane via REST API.
 # Uses the restful provider for all API interactions.
 #
 # The caller must pass in a configured restful provider.
