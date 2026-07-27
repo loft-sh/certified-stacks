@@ -1,0 +1,89 @@
+# Keep StackInstance name `runai` and step name `backend`.
+# Chart requires release `runai-backend`.
+# Keep chart version here. Chart fields do not use Go templates.
+# Keep `runaiVersion` equal to chart version.
+# Use `runai-control-plane-admin` Secret for admin password. Do not use a parameter.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-07-control-plane
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 7] Control Plane'
+  description: run:ai self-hosted control plane. Consumes the admin Secret and CA written by the bootstrap step.
+  defaultNamespace: runai-backend
+  wait: true
+  timeout: 25m
+  config:
+    chart:
+      name: control-plane
+      version: "2.24.86"
+      repoURL: https://runai.jfrog.io/artifactory/cp-charts-prod
+    values: |-
+      global:
+        domain: "{{ .Values.fqdn }}"
+        customCA:
+          enabled: {{ .Values.customCAEnabled }}
+        ingress:
+          ingressClass: "{{ .Values.ingressClass }}"
+        storageClass: "{{ .Values.storageClass }}"
+      tenantsManager:
+        config:
+          adminUsername: "{{ .Values.adminUsername }}"
+          existingSecret: runai-control-plane-admin
+          secretKeys:
+            adminPasswordKey: password
+      # Chart consumers hard-code this name while PostgreSQL normally uses Helm release name.
+      # Keep name stable; vCluster translates it per tenant on host cluster.
+      # Delete PostgreSQL PVC when you uninstall this release.
+      # This prevents the next run from using old control-plane data.
+      postgresql:
+        fullnameOverride: runai-backend-postgresql
+        primary:
+          persistentVolumeClaimRetentionPolicy:
+            enabled: true
+            whenDeleted: Delete
+      # Delete NATS and Thanos Receive PVCs when you uninstall this release.
+      # Keep data when you scale down.
+      # Do not restore removed NATS resource requests without capacity review.
+      # Chart consumers hard-code this name while NATS normally uses Helm release name.
+      nats:
+        fullnameOverride: runai-backend-nats
+        persistentVolumeClaimRetentionPolicy:
+          enabled: true
+          whenDeleted: Delete
+      thanos:
+        receive:
+          persistentVolumeClaimRetentionPolicy:
+            enabled: true
+            whenDeleted: Delete
+  parameters:
+    - variable: fqdn
+      label: Control-plane FQDN
+      description: Domain the control plane is served on. Must match the FQDN the bootstrap step issued the TLS cert for.
+      type: string
+      required: true
+    - variable: customCAEnabled
+      label: Trust the bootstrap CA
+      # Bootstrap writes the `runai-ca-cert` Secret. Set false only for a publicly trusted
+      # control-plane certificate.
+      description: Trust bootstrap CA certificate.
+      type: boolean
+      defaultValue: "true"
+    - variable: ingressClass
+      label: Ingress class
+      type: string
+      required: true
+      defaultValue: nginx
+      validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+    - variable: storageClass
+      label: Storage class
+      type: string
+      required: true
+      validation: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+    - variable: adminUsername
+      label: Control-plane admin username
+      type: string
+      required: true
+      validation: ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$

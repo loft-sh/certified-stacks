@@ -1,0 +1,83 @@
+# Use GPU nodes for this App.
+# Keep chart version here. Chart fields do not use Go templates.
+# Configure `nvidia` RuntimeClass and GPU node labels before you apply this App.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-06-gpu-operator
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 6] NVIDIA GPU Operator'
+  description: NVIDIA GPU Operator for GPU nodes.
+  defaultNamespace: gpu-operator
+  wait: true
+  timeout: 20m
+  config:
+    chart:
+      name: gpu-operator
+      repoURL: https://helm.ngc.nvidia.com/nvidia
+      version: v25.10.1
+    values: |-
+      driver:
+        enabled: {{ .Values.driverEnabled }}
+      hostPaths:
+        driverInstallDir: "{{ .Values.driverInstallDir }}"
+      toolkit:
+        enabled: {{ .Values.toolkitEnabled }}
+        installDir: "{{ .Values.driverInstallDir }}"
+      cdi:
+        enabled: {{ .Values.cdiEnabled }}
+        default: {{ .Values.cdiEnabled }}
+      devicePlugin:
+        enabled: {{ .Values.devicePluginEnabled }}
+      dcgm:
+        enabled: true
+      dcgmExporter:
+        enabled: true
+      migManager:
+        enabled: false
+      nodeStatusExporter:
+        enabled: true
+      nfd:
+        enabled: true
+      gfd:
+        enabled: true
+      operator:
+        defaultRuntime: containerd
+  parameters:
+    - variable: driverEnabled
+      label: Install the NVIDIA driver
+      # Set false when node image includes NVIDIA drivers, such as DOKS GPU pools, GKE with
+      # Google-managed drivers, and most cloud GPU AMIs. Set true on bare nodes.
+      # This mirrors gpu_operator_driver_enabled. Central control-plane model defaults to false.
+      description: Install and manage the NVIDIA driver.
+      type: boolean
+      defaultValue: "false"
+    - variable: devicePluginEnabled
+      label: Enable the device plugin
+      # Set false when host already provides a device plugin, such as GKE.
+      # This mirrors gpu_operator_device_plugin_enabled.
+      description: Enable the GPU Operator device plugin.
+      type: boolean
+      defaultValue: "true"
+    - variable: toolkitEnabled
+      label: Install the container toolkit
+      # This changes node containerd configuration. Set false when node image supplies and manages
+      # NVIDIA Container Toolkit, such as EKS AL2023 accelerated AMIs with nodeadm.
+      description: Install and manage NVIDIA Container Toolkit.
+      type: boolean
+      defaultValue: "true"
+    - variable: cdiEnabled
+      label: Enable CDI
+      # Requires GPU Operator Container Toolkit. Set false when toolkitEnabled is false.
+      description: Use CDI for GPU injection.
+      type: boolean
+      defaultValue: "true"
+    - variable: driverInstallDir
+      label: Driver install directory
+      # Container Toolkit uses this directory too. On GKE with Google-managed drivers, use
+      # /home/kubernetes/bin/nvidia. This mirrors gpu_operator_driver_install_dir.
+      description: Directory that contains NVIDIA drivers.
+      type: string
+      defaultValue: /run/nvidia/driver

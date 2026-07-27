@@ -1,0 +1,121 @@
+# Creates a tenant vCluster and an owned Run:ai StackInstance in that tenant.
+# Apply StackTemplate and App manifests before this template.
+apiVersion: storage.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: runai-tenant
+spec:
+  displayName: Run:ai tenant
+  description: Creates a tenant vCluster, then deploys Run:ai into that tenant through deploy.stacks.
+  owner:
+    user: admin
+  parameters:
+    - variable: tenant
+      description: Run:ai tenant identifier.
+      type: string
+      required: true
+      defaultValue: runai-tenant
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: storageClass
+      description: Host StorageClass for vCluster and Run:ai volumes, for example gp3 or standard-rwo.
+      type: string
+      required: true
+    - variable: runaiRegistryCredentials
+      description: 'JFrog access token for Run:ai images. See: https://run-ai-docs.nvidia.com/multi-tenant/getting-started/installation/preparations'
+      type: password
+      required: true
+    - variable: dockerServer
+      description: Run:ai JFrog registry URL.
+      type: string
+      required: true
+      defaultValue: https://runai.jfrog.io
+    - variable: dockerUsername
+      description: Run:ai JFrog registry username.
+      type: string
+      required: true
+      defaultValue: self-hosted-image-puller-prod
+    - variable: dockerEmail
+      description: Email for Run:ai registry credentials.
+      type: string
+      required: true
+      defaultValue: support@run.ai
+    - variable: adminUsername
+      description: Initial Run:ai UI administrator username.
+      type: string
+      required: true
+      defaultValue: admin@run.ai
+    - variable: adminPassword
+      description: Initial Run:ai UI administrator password.
+      type: password
+      required: true
+    - variable: ingressProvider
+      description: "Host ingress provider: standard or AWS."
+      type: string
+      required: true
+      defaultValue: standard
+      validation: '^(standard|aws)$'
+    - variable: tenantImagePullSecret
+      description: This Secret pulls images for App workloads.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+
+    - variable: domain
+      # DNS for this domain and its wildcard record must resolve to ingress-nginx LoadBalancer IP.
+      # Empty derives <tenant>.<lb-ip>.nip.io after LoadBalancer IP is assigned.
+      description: Control-plane domain.
+      type: string
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    # Keep this input name for callers that already disable the former CronJob.
+    - variable: createCustomLinkCronJob
+      label: Create Run:ai custom-link Job
+      description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
+      type: boolean
+      defaultValue: "true"
+  template:
+    # The custom-link Job lives in an App, not in `spaceTemplate.objects`. Only the App path
+    # renders through the Platform's synthetic chart, which is what supplies `.Values.__image__`;
+    # `objects` is applied as already-rendered YAML and would need the image hardcoded.
+    spaceTemplate:
+      apps:
+        - name: runai-custom-link
+          parameters: |
+            createCustomLinkJob: {{ .Values.createCustomLinkCronJob }}
+            domain: "{{ .Values.domain }}"
+            tenantImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+    instanceTemplate:
+      metadata:
+        labels:
+          loft.sh/stacks-sync: "true"
+          runai.loft.sh/tenancy-model: dedicated-control-plane
+    helmRelease:
+      chart:
+        version: "0.36.1"
+      values: |-
+        {{ if .Values.tenantImagePullSecret }}
+        controlPlane:
+          advanced:
+            workloadServiceAccount:
+              imagePullSecrets:
+                - name: {{ .Values.tenantImagePullSecret }}
+        {{ end }}
+        deploy:
+          stacks:
+            - name: runai
+              templateRef:
+                name: run-ai-dedicated-control-plane
+              inputs:
+                tenant: {{ .Values.tenant }}
+                clusterName: {{ .Values.tenant }}
+                storageClass: {{ .Values.storageClass }}
+                runaiRegistryCredentials: {{ .Values.runaiRegistryCredentials }}
+                dockerServer: {{ .Values.dockerServer }}
+                dockerUsername: {{ .Values.dockerUsername }}
+                dockerEmail: {{ .Values.dockerEmail }}
+                adminUsername: {{ .Values.adminUsername }}
+                adminPassword: {{ .Values.adminPassword }}
+                ingressProvider: {{ .Values.ingressProvider }}
+                # Empty keeps the derived nip.io FQDN.
+                domain: "{{ .Values.domain }}"
+                # TLS defaults to a self-signed certificate. See README section "TLS" for how to
+                # supply a trusted one; add tlsMode/userTls* here and as template parameters above.

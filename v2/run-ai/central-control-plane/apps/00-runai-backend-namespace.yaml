@@ -1,0 +1,91 @@
+# Creates the namespaces later steps deploy into, and the one admission prerequisite the GPU
+# Operator needs before any of its pods can be scheduled.
+#
+# Bootstrap's Helm pre-install hook creates Secrets and RBAC in runai-backend. Helm executes hooks
+# before normal release manifests, so this separate task must create the namespace first.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-00-runai-backend-namespace
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 0] Create namespaces and admission prerequisites'
+  description: Creates the namespace used by the Run:AI control-plane backend and bootstrap hooks,
+    plus the gpu-operator namespace and the scoped pod quota GKE requires there.
+  defaultNamespace: runai
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: runai-backend
+        annotations:
+          # Namespace can contain independently managed tenant registration artifacts. Keep it when
+          # this Stack is removed; a later Stack installation reuses it.
+          helm.sh/resource-policy: keep
+      ---
+      # ON GKE, READ THIS BEFORE CHANGING THE QUOTA BELOW.
+      #
+      # GKE configures the ResourceQuota admission plugin's `limitedResources` with `matchScopes` on
+      # PriorityClass, which inverts the usual default: a pod requesting `system-node-critical` or
+      # `system-cluster-critical` is REJECTED unless its own namespace already holds a ResourceQuota
+      # whose `scopeSelector` matches it. No quota does not mean unlimited, it means zero, and the
+      # pod is never created:
+      #
+      #   Error creating: insufficient quota to match these scopes:
+      #   [{PriorityClass In [system-node-critical system-cluster-critical]}]
+      #
+      # The GPU Operator chart hardcodes `system-node-critical` on its operator Deployment, on the
+      # node-feature-discovery master, gc, and worker, and on its operand DaemonSets, and ships no
+      # quota of its own. Without the quota below the `gpu` task reaches zero ready pods and burns
+      # its full Helm `wait` timeout while every workload reports FailedCreate.
+      #
+      # Nothing else in this Stack needs one added: GKE ships equivalent `gcp-critical-pods` quotas
+      # in the namespaces it manages, and the run:ai control-plane chart ships its own
+      # `allow-system-critical-pods` into runai-backend.
+      #
+      # This is what makes `gpuProvider: standard` usable on a guarded cluster, which is the
+      # supported way to run the GPU Operator on GKE: an Ubuntu node pool created with
+      # gpu-driver-version=disabled. `gpuProvider: gke` installs no GPU Operator and does not need
+      # the quota, but the namespace and quota are created either way rather than made conditional,
+      # because they cost nothing and switching provider must not require reordering tasks.
+      #
+      # Harmless on other clusters. Without that admission configuration a scoped quota only
+      # accounts for matching pods, and the limit below is not a real ceiling.
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gpu-operator
+        annotations:
+          # The GPU Operator's own Helm release owns objects in here. Removing this namespace with
+          # this Stack would take that release's objects with it, so leave it behind.
+          helm.sh/resource-policy: keep
+      ---
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: allow-system-critical-pods
+        namespace: gpu-operator
+        annotations:
+          # Kept for the same reason as the namespace. Dropping this quota while the GPU Operator
+          # still runs leaves a half-state: running pods survive, but every pod recreated after a
+          # node reboot or a chart rollout is rejected again.
+          helm.sh/resource-policy: keep
+      spec:
+        # This is an admission opt-in for the namespace, not a capacity cap. GPU Operator's pod
+        # count is bounded by node count, so any fixed number is a cliff a large GPU fleet
+        # eventually falls off; GKE's own critical-pod quotas use this same effectively unlimited
+        # value. Lower it only if you actually intend to cap GPU Operator pods.
+        hard:
+          pods: "1G"
+        scopeSelector:
+          matchExpressions:
+            # One `In` covering both classes matches a pod using either, so a single quota is
+            # enough. The chart uses `system-node-critical` today; the second value keeps this
+            # working if that changes.
+            - scopeName: PriorityClass
+              operator: In
+              values:
+                - system-node-critical
+                - system-cluster-critical

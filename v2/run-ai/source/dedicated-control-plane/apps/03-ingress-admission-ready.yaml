@@ -1,0 +1,44 @@
+# Wait for ingress-nginx admission webhook before installing control-plane Ingresses.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-03-ingress-admission-ready
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 3] Wait for Ingress admission webhook'
+  description: Blocks dependent steps until ingress-nginx admission webhook accepts TLS connections.
+  defaultNamespace: ingress-nginx
+  wait: true
+  timeout: 6m
+  config:
+    manifests: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-ingress-admission-ready
+      spec:
+        backoffLimit: 0
+        activeDeadlineSeconds: 300
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: wait
+                image: curlimages/curl:8.12.1
+                command: ["sh", "-ec"]
+                args:
+                  - |
+                    url="https://{{ .Values.ingressAdmissionServiceName }}.ingress-nginx.svc:443/networking/v1/ingresses"
+                    for i in $(seq 1 150); do
+                      code="$(curl -sk --connect-timeout 2 -o /dev/null -w '%{http_code}' "$url" || true)"
+                      [ "$code" != 000 ] && exit 0
+                      sleep 2
+                    done
+                    exit 1
+  parameters:
+    - variable: ingressAdmissionServiceName
+      label: Ingress admission Service name
+      type: string
+      required: true
+      validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$

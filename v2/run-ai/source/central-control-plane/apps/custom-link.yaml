@@ -1,0 +1,319 @@
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-custom-link
+spec:
+  access:
+  - users:
+    - '*'
+    verbs:
+    - get
+  config:
+    chart: {}
+    manifests: |2
+      {{- if .Values.createCustomLinkJob }}
+      {{- $vciName := .Values.loft.virtualClusterName }}
+      # The Platform renders this App as a Helm release and supplies `.Values.loft` beside the
+      # parameters the VirtualClusterTemplate passed in. `.Values.loft.space` is the tenant's space
+      # namespace, which is this release's namespace and the one these objects apply into.
+      {{- $spaceNamespace := .Values.loft.space }}
+      {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
+      {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
+      # Platform keeps every VirtualClusterInstance in its project namespace on the Control Plane
+      # Cluster, named `<prefix><project>`, not in the tenant's own space namespace. `.Values.loft`
+      # carries the project but not the prefix, and the prefix is an installation-wide Platform
+      # setting, so it is written out here: `p-` on current installations. An installation still on
+      # the legacy `loft-p-` prefix has to change it below, and shows up as this App failing to
+      # apply a Role into a namespace that does not exist.
+      {{- $projectNamespace := printf "p-%s" .Values.loft.project }}
+      # One retrying Job per VCI. Space-namespace helper RBAC is owned by this Job and removed by
+      # its TTL. An ownerReference only binds within one namespace, so the project-namespace RBAC
+      # that reaches the VCI and the shared-Ingress RBAC are each removed before Job success
+      # through a Role-owned RoleBinding.
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $spaceNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $spaceNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      rules:
+        # The VCI is not here: it is a Platform object in the project namespace, which the
+        # project-namespace Role below covers.
+        - apiGroups: ["batch"]
+          resources: ["jobs"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["serviceaccounts"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "patch"]
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["roles", "rolebindings"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $spaceNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      subjects:
+        - kind: ServiceAccount
+          name: {{ $helperName }}
+          namespace: {{ $spaceNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ $helperName }}
+      ---
+      # This Role and binding live beside the VCI in the project namespace. Its binding becomes a
+      # dependent of this Role, then the Job deletes the Role once it has patched its VCI.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $projectNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      rules:
+        - apiGroups: ["storage.loft.sh"]
+          resources: ["virtualclusterinstances"]
+          resourceNames: ["{{ $vciName }}"]
+          verbs: ["get", "patch"]
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["roles"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "delete"]
+        # `kubectl patch <resource> <name>` resolves the named object with a GET before it
+        # sends the PATCH, so every self-patched resource below needs `get` as well.
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["rolebindings"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $projectNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      subjects:
+        - kind: ServiceAccount
+          name: {{ $helperName }}
+          namespace: {{ $spaceNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ $helperName }}
+      ---
+      # This Role and binding live beside the shared ingress. Its binding becomes a dependent of
+      # this Role, then the Job deletes the Role after it patches its VCI.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ $helperName }}
+        namespace: runai-backend
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      rules:
+        - apiGroups: ["networking.k8s.io"]
+          resources: ["ingresses"]
+          verbs: ["get", "list"]
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["roles"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "delete"]
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["rolebindings"]
+          resourceNames: ["{{ $helperName }}"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ $helperName }}
+        namespace: runai-backend
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      subjects:
+        - kind: ServiceAccount
+          name: {{ $helperName }}
+          namespace: {{ $spaceNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ $helperName }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{ $helperName }}
+        namespace: {{ $spaceNamespace }}
+        labels:
+          runai.loft.sh/vci: {{ $vciName }}
+      spec:
+        # Shared Ingress can arrive after this VCI.
+        backoffLimit: 100
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: Never
+            serviceAccountName: {{ $helperName }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            {{- if .Values.tenantImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.tenantImagePullSecret }}
+            {{- end }}
+            containers:
+              - name: link
+                image: {{ .Values.__image__ | quote }}
+                imagePullPolicy: IfNotPresent
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                  readOnlyRootFilesystem: true
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                  # The tenant's space namespace on the Control Plane Cluster: this Job and its
+                  # own RBAC.
+                  - name: SPACE_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  # The Platform project namespace on the same cluster, which is where the VCI is.
+                  - name: PROJECT_NAMESPACE
+                    value: {{ $projectNamespace }}
+                  - name: VCI_NAME
+                    value: {{ $vciName }}
+                  - name: HELPER_NAME
+                    value: {{ $helperName }}
+                  - name: LOCAL_CLUSTER
+                    value: {{ .Values.controlPlaneClusterName }}
+                  - name: RUNAI_NAMESPACE
+                    value: runai-backend
+                  - name: INGRESS_SELECTOR
+                    value: app.kubernetes.io/part-of=control-plane
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    for tool in kubectl jq; do
+                      command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }
+                    done
+
+                    annotation=loft.sh/custom-links
+                    install_local_cleanup_tree() {
+                      job_uid="$(kubectl -n "$SPACE_NAMESPACE" get job "$HELPER_NAME" -o jsonpath='{.metadata.uid}')"
+                      [ -n "$job_uid" ] || return 1
+                      owner="$(jq -cn --arg name "$HELPER_NAME" --arg uid "$job_uid" \
+                        '{metadata: {ownerReferences: [{apiVersion: "batch/v1", kind: "Job", name: $name, uid: $uid}]}}')"
+                      kubectl -n "$SPACE_NAMESPACE" patch serviceaccount "$HELPER_NAME" --type merge -p "$owner" >/dev/null
+                      kubectl -n "$SPACE_NAMESPACE" patch role "$HELPER_NAME" --type merge -p "$owner" >/dev/null
+                      kubectl -n "$SPACE_NAMESPACE" patch rolebinding "$HELPER_NAME" --type merge -p "$owner" >/dev/null
+                    }
+                    install_project_cleanup_tree() {
+                      role_uid="$(kubectl -n "$PROJECT_NAMESPACE" get role "$HELPER_NAME" -o jsonpath='{.metadata.uid}')"
+                      [ -n "$role_uid" ] || return 1
+                      owner="$(jq -cn --arg name "$HELPER_NAME" --arg uid "$role_uid" \
+                        '{metadata: {ownerReferences: [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", name: $name, uid: $uid}]}}')"
+                      kubectl -n "$PROJECT_NAMESPACE" patch rolebinding "$HELPER_NAME" --type merge -p "$owner" >/dev/null
+                    }
+                    cleanup_project_access() {
+                      # Last project-namespace call: GC removes the RoleBinding once this Role is gone.
+                      kubectl -n "$PROJECT_NAMESPACE" delete role "$HELPER_NAME" --wait=false --ignore-not-found >/dev/null
+                    }
+                    install_ingress_cleanup_tree() {
+                      role_uid="$(kubectl -n "$RUNAI_NAMESPACE" get role "$HELPER_NAME" -o jsonpath='{.metadata.uid}')"
+                      [ -n "$role_uid" ] || return 1
+                      owner="$(jq -cn --arg name "$HELPER_NAME" --arg uid "$role_uid" \
+                        '{metadata: {ownerReferences: [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", name: $name, uid: $uid}]}}')"
+                      kubectl -n "$RUNAI_NAMESPACE" patch rolebinding "$HELPER_NAME" --type merge -p "$owner" >/dev/null
+                    }
+                    cleanup_ingress_access() {
+                      # Last host API call: GC removes the host RoleBinding after this Role is gone.
+                      kubectl -n "$RUNAI_NAMESPACE" delete role "$HELPER_NAME" --wait=false --ignore-not-found >/dev/null
+                    }
+
+                    install_local_cleanup_tree || { echo "[link] cannot install local cleanup ownership" >&2; exit 1; }
+                    install_project_cleanup_tree || { echo "[link] cannot install project cleanup ownership" >&2; exit 1; }
+                    # The VCI is a Platform object in the project namespace, not in the tenant's space.
+                    instance="$(kubectl -n "$PROJECT_NAMESPACE" get virtualclusterinstances.storage.loft.sh "$VCI_NAME" -o json 2>/dev/null)" || {
+                      echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: VirtualClusterInstance not ready" >&2; exit 1;
+                    }
+                    current="$(printf '%s' "$instance" | jq -r --arg annotation "$annotation" '(.metadata.annotations // {})[$annotation] // empty')"
+                    install_ingress_cleanup_tree || { echo "[link] cannot install ingress cleanup ownership" >&2; exit 1; }
+                    if [ -n "$current" ]; then
+                      cleanup_ingress_access
+                      cleanup_project_access
+                      echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: custom link already set"
+                      exit 0
+                    fi
+                    cluster="$(printf '%s' "$instance" | jq -r '.spec.clusterRef.cluster // empty')"
+                    if [ "$cluster" != "$LOCAL_CLUSTER" ]; then
+                      echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: on cluster '$cluster', not '$LOCAL_CLUSTER'" >&2; exit 1
+                    fi
+                    # The shared control-plane FQDN is the host Stack's `domain` when set, and a
+                    # derived nip.io name otherwise, so accept either form here.
+                    host="$(kubectl -n "$RUNAI_NAMESPACE" get ingress -l "$INGRESS_SELECTOR" -o json 2>/dev/null \
+                      | jq -r '[.items[].spec.rules[]?.host | select(type == "string")] | sort | .[0] // empty')"
+                    [ -n "$host" ] || { echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: shared Run:ai Ingress not ready" >&2; exit 1; }
+                    case "$host" in
+                      *[!a-z0-9.-]*|-*|.*|*..*) echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: refusing malformed host '$host'" >&2; exit 1 ;;
+                    esac
+                    patch="$(jq -cn --arg annotation "$annotation" --arg value "RunAI_UI=https://$host" '{metadata: {annotations: {($annotation): $value}}}')"
+                    kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.storage.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
+                    echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: set $annotation to RunAI_UI=https://$host"
+                    cleanup_ingress_access
+                    cleanup_project_access
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
+      {{- end }}
+  description: Fills one VirtualClusterInstance's RunAI_UI custom link from the shared Run:ai
+    Ingress. Referenced from a VirtualClusterTemplate's spaceTemplate.apps, which is what gives
+    it the running Platform's own image.
+  displayName: Run:ai Custom Link
+  parameters:
+  - defaultValue: "true"
+    description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
+    label: Create Run:ai custom-link Job
+    type: boolean
+    variable: createCustomLinkJob
+  - description: Name of the Control Plane Cluster the shared run:ai control plane runs on.
+    label: Control Plane Cluster
+    required: true
+    type: string
+    variable: controlPlaneClusterName
+  - description: (Optional) Name of an imagePullSecret needed to pull the Platform image.
+    label: Tenant image pull Secret
+    type: string
+    variable: tenantImagePullSecret

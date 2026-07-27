@@ -1,0 +1,72 @@
+# Keep StackInstance name `runai` and step name `cluster`.
+# Chart requires release `runai-cluster`.
+# Keep chart version here. Chart fields do not use Go templates.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-08-cluster
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 8] Cluster'
+  description: run:ai cluster components, registered against the self-hosted control plane.
+  defaultNamespace: runai
+  wait: true
+  timeout: 20m
+  config:
+    chart:
+      name: runai-cluster
+      version: "2.24.86"
+      repoURL: https://runai.jfrog.io/artifactory/api/helm/run-ai-charts
+    values: |-
+      controlPlane:
+        url: "{{ .Values.fqdn }}"
+        clientSecret: "{{ .Values.clientSecret }}"
+      cluster:
+        uid: "{{ .Values.clusterUID }}"
+        url: "{{ .Values.clusterFqdn | default .Values.fqdn }}"
+      global:
+        customCA:
+          enabled: {{ .Values.customCAEnabled }}
+      clusterConfig:
+        global:
+          ingress:
+            ingressClass: "{{ .Values.ingressClass }}"
+  parameters:
+    - variable: fqdn
+      label: Control-plane FQDN
+      # Used as cluster URL when clusterFqdn is empty.
+      description: Control-plane domain.
+      type: string
+      required: true
+    - variable: clusterFqdn
+      label: Cluster FQDN
+      # Sets cluster.url. Leave empty when control plane and cluster share a domain.
+      # Set when multiple clusters use one control plane so each reports a distinct URL.
+      # Chart reads this through cluster.url helper in templates/hooks/_helpers.tpl, although chart
+      # values documentation does not list it.
+      description: Domain for cluster workloads.
+      type: string
+    - variable: clusterUID
+      label: Cluster UID
+      description: uuid the control plane assigned when the cluster was registered.
+      type: string
+      required: true
+    - variable: clientSecret
+      label: Cluster client secret
+      description: OIDC client secret from the cluster-install-info call; the cluster agent authenticates with it.
+      type: password
+      required: true
+    - variable: customCAEnabled
+      label: Trust the bootstrap CA
+      # Bootstrap writes the `runai-ca-cert` Secret. Set false only for a publicly trusted
+      # control-plane certificate.
+      description: Trust bootstrap CA certificate.
+      type: boolean
+      defaultValue: "true"
+    - variable: ingressClass
+      label: Ingress class
+      type: string
+      required: true
+      defaultValue: nginx
+      validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$

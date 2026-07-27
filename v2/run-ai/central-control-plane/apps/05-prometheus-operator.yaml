@@ -1,0 +1,27 @@
+
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-05-prometheus-operator
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 5] Prometheus Operator'
+  description: Installs Prometheus CRDs and operator only; runai-cluster owns its Prometheus instance.
+  defaultNamespace: monitoring
+  wait: true
+  timeout: 10m
+  config:
+    chart:
+      name: kube-prometheus-stack
+      repoURL: https://prometheus-community.github.io/helm-charts
+      version: 87.17.0
+    values: |-
+      grafana:
+        enabled: false
+      alertmanager:
+        enabled: false
+      prometheus:
+        enabled: false
+      nodeExporter:
+        enabled: false

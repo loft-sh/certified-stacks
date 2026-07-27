@@ -1,0 +1,51 @@
+# PRE-REGISTRATION PATH. This is no longer how a tenant is normally registered: the tenant cluster
+# template creates its own `run-ai-central-control-plane-registration` instance, named after the cluster, as part of
+# creating the cluster. Apply this copy only to register a tenant ahead of its cluster existing, or
+# under a name that is not its cluster's, and then set `tenantSlug` on the cluster template to the
+# value below so it uses this registration instead of making a second one.
+#
+# Name each instance `runai-reg-<tenantSlug>`. Host foundation and every hand-applied registration
+# share the project namespace, so a naming convention is what keeps them apart.
+#
+# `tenantSlug` MUST be unique across this control plane. Registration matches an existing run:ai
+# cluster by this name, so two instances sharing a slug adopt the same cluster and either one can
+# deregister the other.
+#
+# KEEP THIS INSTANCE for the tenant's whole lifetime: its pre-delete hook is the deregistration.
+# Teardown order is tenant cluster first, then this instance.
+#
+# It takes no credentials, and no control-plane address. The administrator password is read from the
+# `runai-control-plane-admin` Secret the host Stack wrote into namespace `runai-backend`, and the
+# control-plane FQDN, the ingress LoadBalancer address, and the CA setting are read from the
+# `runai/runai-control-plane-endpoint` ConfigMap the host Stack published.
+#
+# It writes `runai-backend/runai-tenant-facts-<tenantSlug>`, which is everything the tenant Stack
+# consumes. The tenant cluster template syncs that Secret in; see the tenant cluster template.
+apiVersion: storage.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: runai-reg-tenant-a
+spec:
+  displayName: "run:ai registration for tenant-a"
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: run-ai-central-control-plane-registration
+  inputs:
+    tenantSlug: tenant-a
+    # Optional. Empty derives `tenant-a.<host ingress address>.nip.io` from the address the host
+    # Stack published, and the tenant reads the result back out of the facts Secret, so there is no
+    # second value to keep in step. Set it only for a real domain you control.
+    # tenantClusterDomain: tenant-a.runai.example.com
+    # Keep equal to runaiVersion on the host and tenant Stacks.
+    runaiVersion: "2.24.86"
+    # Match the host Stack's tlsMode.
+    tlsMode: self-signed
+    # Optional, and only when the vCluster Platform image comes from a private registry or an
+    # air-gapped mirror. Name a dockerconfigjson Secret you create in namespace `runai-backend` on
+    # this cluster BEFORE applying. Set the same value on the host StackInstance, which needs the
+    # Secret in `runai` instead. See README section "Pulling the job image".
+    # hookImagePullSecret: platform-reg-creds

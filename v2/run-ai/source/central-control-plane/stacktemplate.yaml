@@ -1,0 +1,122 @@
+# Central-control-plane tenant runtime. Deployed inside ONE tenant cluster, normally through `deploy.stacks` in
+# `example/vcluster-template-with-runai-stack.yaml`.
+#
+# This Stack installs no control plane and no GPU Operator. Both are shared host components,
+# installed once by `stacktemplate-host.yaml`. The tenant reads GPU capacity and NFD/GFD labels from
+# host nodes through vCluster node sync, and registers against the shared control plane using values
+# published by `stacktemplate-registration.yaml`.
+#
+# It asks for nothing. Every value it needs arrives as a Secret the tenant cluster template syncs in
+# from the Control Plane Cluster, and the `discover` task turns those Secrets into task outputs:
+#
+#   runai/runai-tenant-facts     control-plane FQDN, this tenant's cluster URL, cluster UID, client
+#                               secret, CA setting. Written per tenant by the registration Stack as
+#                               `runai-backend/runai-tenant-facts-<registration slug>` and renamed on
+#                               the way in, which is why nothing here needs to know the tenant's own
+#                               name.
+#   runai/runai-reg-creds-host   the JFrog credential the Control Plane Cluster already holds.
+#   runai/runai-ca-cert          the control plane's CA, so nobody handles a certificate and a CA
+#                               rotation reaches every tenant on its own.
+#
+# Those three names are a contract with the cluster template's `sync.fromHost.secrets.mappings`.
+# Change one here and you change it there.
+#
+# Apply order: host Stack once, then this tenant's registration, then this Stack. The cluster
+# template creates the registration itself as part of creating the cluster, so in the normal case
+# the second step is not a separate action and this Stack's `discover` task simply waits it out.
+#
+# It holds no control-plane administrator credentials and no cluster-wide node permission.
+apiVersion: storage.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: run-ai-central-control-plane
+  labels:
+    vcluster.com/certified: "true"
+spec:
+  displayName: "run:ai central-control-plane tenant (shared control plane and GPU Operator)"
+  description: >-
+    run:ai cluster components for one central-control-plane tenant. Consumes a control plane and an NVIDIA GPU
+    Operator that already exist on the Control Plane Cluster, plus a cluster registration performed
+    by an administrator. Installs registry credentials, the Prometheus operator, and the run:ai
+    cluster agent, taking every value from Secrets synced in from the host.
+  inputs:
+    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    # Whether to wait for the control plane's CA Secret to be synced in. Set false only when the
+    # control plane serves a publicly trusted certificate: the host Stack creates no CA Secret at all
+    # in that case, and waiting for one would never return. Keep it equal to the host Stack's
+    # `customCAEnabled`. This gates the WAIT only; whether the chart mounts the CA comes from the
+    # facts Secret, so the two cannot disagree about the mount.
+    - { variable: requireControlPlaneCA, type: boolean, defaultValue: "true" }
+
+  tasks:
+
+    # Turns the synced Secrets into task outputs, and blocks until they exist. That wait is the only
+    # ordering guarantee against the vCluster syncer: without it this Stack races it, and a CA that
+    # arrives late surfaces much later as TLS failures from the run:ai agent instead of a failed task.
+    #
+    # Reading `runai` is legal because `runai-step-02-discover` deploys there, and the Platform builds
+    # the output allow-list from each App's release namespace.
+    #
+    # The wait covers more than the syncer now. The tenant cluster template creates this tenant's
+    # registration as part of creating the cluster, so the Stack that writes the facts Secret is
+    # very likely still running when this task first fires. Waiting is strictly better than failing:
+    # the task retry budget is fixed at 4 attempts a minute apart and is not configurable, so a
+    # registration that takes longer than four minutes would exhaust it. `awaitTimeoutSeconds` stays
+    # below `taskTimeout`, so a real never-arrives names the Secret instead of surfacing as a timeout.
+    - name: discover
+      taskTimeout: 12m
+      app:
+        templateRef: { name: runai-step-02-discover }
+        parameters:
+          awaitSecrets: "runai-tenant-facts,runai-reg-creds-host{{ if .Values.requireControlPlaneCA }},runai-ca-cert{{ end }}"
+          awaitTimeoutSeconds: "600"
+      outputs:
+        - name: controlplanefqdn
+          fromSecret: { namespace: runai, name: runai-tenant-facts, key: fqdn }
+        - name: clusterdomain
+          fromSecret: { namespace: runai, name: runai-tenant-facts, key: clusterdomain }
+        - name: clusteruid
+          fromSecret: { namespace: runai, name: runai-tenant-facts, key: uid }
+        - name: clientsecret
+          fromSecret: { namespace: runai, name: runai-tenant-facts, key: clientsecret }
+        - name: customcaenabled
+          fromSecret: { namespace: runai, name: runai-tenant-facts, key: customcaenabled }
+        - name: dockerconfigjson
+          fromSecret: { namespace: runai, name: runai-reg-creds-host, key: .dockerconfigjson }
+
+    # Re-creates the pull Secret as a release resource under the name the run:ai charts default to.
+    # The synced copy cannot be used directly: it is owned by the syncer and read-only in the tenant.
+    - name: registry
+      dependsOn: [discover]
+      taskTimeout: 5m
+      app:
+        templateRef: { name: runai-step-01-registry-secret }
+        parameters:
+          registrySecretName: runai-reg-creds
+          dockerConfigJson: "{{ .Outputs.discover.dockerconfigjson }}"
+          # No control plane lives here, so no `runai-backend` copy and no empty namespace left over.
+          copyToControlPlaneNamespace: "false"
+
+    # CRDs and operator only. The run:ai operator creates this tenant's own Prometheus instance from
+    # RunaiConfig at runtime, which is why the CRDs must exist in the tenant's own API server.
+    - name: prometheus
+      taskTimeout: 15m
+      app:
+        templateRef: { name: runai-step-05-prometheus-operator }
+
+    # Keep task name `cluster`. Chart requires release `runai-cluster`.
+    # `fqdn` is the SHARED control plane; `clusterFqdn` is this tenant's own URL. They differ here,
+    # unlike dedicated control-plane tenancy where one Stack owns both. Both come from the registration that created the
+    # cluster, so the control plane and the agent cannot disagree about where the cluster lives.
+    - name: cluster
+      dependsOn: [discover, registry, prometheus]
+      taskTimeout: 30m
+      app:
+        templateRef: { name: runai-step-08-cluster }
+        parameters:
+          fqdn: "{{ .Outputs.discover.controlplanefqdn }}"
+          clusterFqdn: "{{ .Outputs.discover.clusterdomain }}"
+          clusterUID: "{{ .Outputs.discover.clusteruid }}"
+          clientSecret: "{{ .Outputs.discover.clientsecret }}"
+          customCAEnabled: "{{ .Outputs.discover.customcaenabled }}"
+          ingressClass: "{{ .Values.ingressClass }}"

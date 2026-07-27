@@ -1,0 +1,201 @@
+# Waits for objects this Stack does not create, so a task can declare outputs over them.
+#
+# Two callers, both central control-plane tenancy:
+#   - the tenant Stack, over Secrets the tenant cluster template syncs in from the Control Plane
+#     Cluster;
+#   - the registration Stack, over the endpoint ConfigMap the host Stack wrote.
+#
+# The Platform allows a Stack to read task outputs only from namespaces its Apps deployed into, and
+# it takes that from the Helm RELEASE namespace, which for a templateRef task is the referenced App's
+# `defaultNamespace`. That is why the namespace here is fixed at `runai` instead of being a
+# parameter: a parameter would move the manifests without moving the allow-list entry, and every
+# output would fail to capture.
+#
+# The wait is what makes an unsynced object a task failure instead of a silent one. Without it the
+# tenant Stack races the vCluster syncer, and a missing `runai-ca-cert` surfaces much later as TLS
+# errors from the run:ai agent.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-02-discover
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 2] Discover (await external objects)'
+  description: >-
+    Blocks until the named Secrets and ConfigMaps exist in namespace `runai`, so later tasks can read
+    values out of objects written by another Stack or synced in from the Control Plane Cluster.
+  defaultNamespace: runai
+  config:
+    manifests: |-
+      {{- define "runai-discover.wait" -}}
+      set -eu
+
+      deadline=$(( $(date +%s) + AWAIT_TIMEOUT_SECONDS ))
+
+      wait_for() {
+        kind="$1"
+        name="$2"
+        while ! kubectl -n runai get "$kind" "$name" >/dev/null 2>&1; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "timed out after ${AWAIT_TIMEOUT_SECONDS}s waiting for ${kind}/${name} in namespace runai" >&2
+            echo "nothing in this Stack creates it. Inside a tenant cluster it arrives through" >&2
+            echo "sync.fromHost.secrets.mappings on the tenant cluster template, and the facts" >&2
+            echo "Secret is mapped from runai-backend/runai-tenant-facts-<registration slug> on the" >&2
+            echo "Control Plane Cluster. Check that mapping, and that this tenant's registration" >&2
+            echo "StackInstance exists and reached Healthy." >&2
+            exit 1
+          fi
+          echo "waiting for ${kind}/${name} in namespace runai"
+          sleep 5
+        done
+        echo "found ${kind}/${name}"
+      }
+
+      # Unquoted on purpose: word splitting is how the comma-separated inputs become arguments.
+      for name in $(echo "${AWAIT_SECRETS}" | tr ',' ' '); do
+        wait_for secret "$name"
+      done
+      for name in $(echo "${AWAIT_CONFIGMAPS}" | tr ',' ' '); do
+        wait_for configmap "$name"
+      done
+      {{- end -}}
+
+      # Not a hook: the release has to own at least one object in `runai`, and recording what was
+      # awaited makes a stuck tenant readable with `kubectl get cm`.
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: {{ .Release.Name }}-discover
+        namespace: runai
+      data:
+        awaitSecrets: {{ .Values.awaitSecrets | default "" | quote }}
+        awaitConfigMaps: {{ .Values.awaitConfigMaps | default "" | quote }}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: runai-discover-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: runai-discover-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["secrets", "configmaps"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: runai-discover-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: runai-discover-{{ .Release.Name }}
+          namespace: runai
+      roleRef:
+        kind: Role
+        name: runai-discover-{{ .Release.Name }}
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      # A pre-install/pre-upgrade hook, so the release's own resources and every later task wait for
+      # it. Helm blocks on hook Jobs, which is the whole mechanism here.
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-discover-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      spec:
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            serviceAccountName: runai-discover-{{ .Release.Name }}
+      {{- if .Values.hookImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.hookImagePullSecret | quote }}
+      {{- end }}
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: discover
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  # kubectl writes a discovery cache under $HOME; the root filesystem is read-only.
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                  - name: AWAIT_SECRETS
+                    value: {{ .Values.awaitSecrets | default "" | quote }}
+                  - name: AWAIT_CONFIGMAPS
+                    value: {{ .Values.awaitConfigMaps | default "" | quote }}
+                  - name: AWAIT_TIMEOUT_SECONDS
+                    value: {{ .Values.awaitTimeoutSeconds | default "300" | quote }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "runai-discover.wait" . | indent 14 }}
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
+  parameters:
+    - variable: awaitSecrets
+      label: Secrets to await
+      description: Comma separated Secret names that must exist in namespace `runai` before this task completes.
+      type: string
+    - variable: awaitConfigMaps
+      label: ConfigMaps to await
+      description: Comma separated ConfigMap names that must exist in namespace `runai` before this task completes.
+      type: string
+    - variable: awaitTimeoutSeconds
+      label: Await timeout (seconds)
+      # Keep below taskTimeout so failure identifies missing object instead of timing out.
+      description: Task wait limit in seconds.
+      type: string
+      defaultValue: "300"
+    - variable: hookImagePullSecret
+      label: Hook image pull secret
+      # Secret must be in `runai` and pull vCluster Platform image. Needed only on Control Plane
+      # Cluster. Tenant cluster Jobs sync to host and use vCluster workload ServiceAccount.
+      description: Image pull Secret for hook Job.
+      type: string
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'

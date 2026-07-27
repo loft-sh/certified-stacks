@@ -1,0 +1,472 @@
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: restful-operation
+spec:
+  access:
+  - users:
+    - '*'
+    verbs:
+    - get
+  config:
+    chart: {}
+    manifests: |2
+
+      {{- $name := .Release.Name -}}
+      {{- $ns := .Values.namespace | default .Release.Namespace -}}
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: restful-op-{{ $name }}
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: restful-op-{{ $name }}
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get", "create", "patch", "update"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: restful-op-{{ $name }}
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: restful-op-{{ $name }}
+          namespace: {{ $ns }}
+      roleRef:
+        kind: Role
+        name: restful-op-{{ $name }}
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      # Create output Secret as a release resource.
+      # Hook updates keys in this Secret.
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ .Values.outputSecret }}
+        namespace: {{ $ns }}
+      type: Opaque
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: restful-op-create-{{ $name }}
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            serviceAccountName: restful-op-{{ $name }}
+      {{- if .Values.hookImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.hookImagePullSecret | quote }}
+      {{- end }}
+            restartPolicy: Never
+            containers:
+              - name: restful-op
+                image: {{ .Values.__image__ | quote }}
+                env:
+                  - name: MODE
+                    value: "create"
+                  - name: BASE_URL
+                    value: {{ .Values.baseURL | quote }}
+                  - name: METHOD
+                    value: {{ default "POST" .Values.createMethod | quote }}
+                  - name: PATH_
+                    value: {{ .Values.createPath | quote }}
+                  - name: BODY
+                    value: {{ .Values.body | default "" | quote }}
+      {{- if .Values.bodySecret }}
+                  - name: BODY_SECRET_DIR
+                    value: "/var/run/restful-op/body-secret"
+                  - name: BODY_SECRET_FIELDS
+                    value: {{ .Values.bodySecretFields | default "" | quote }}
+      {{- end }}
+                  - name: READ_PATH
+                    value: {{ .Values.readPath | default "" | quote }}
+                  - name: READ_FILTER
+                    value: {{ .Values.readFilter | default "" | quote }}
+                  - name: OUTPUTS
+                    value: {{ .Values.outputs | quote }}
+                  - name: OUTPUT_SECRET
+                    value: {{ .Values.outputSecret | quote }}
+                  - name: INSECURE
+                    value: {{ .Values.insecure | default "false" | quote }}
+                  - name: RETRY_COUNT
+                    value: {{ .Values.retryCount | default "30" | quote }}
+                  - name: RETRY_DELAY
+                    value: {{ .Values.retryDelay | default "10" | quote }}
+      {{- if .Values.credentialsSecret }}
+                  - name: AUTHORIZATION
+                    valueFrom:
+                      secretKeyRef:
+                        name: {{ .Values.credentialsSecret | quote }}
+                        key: authorization
+      {{- end }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "restful-op.script" . | indent 14 }}
+      {{- if .Values.bodySecret }}
+                volumeMounts:
+                  - name: body-secret
+                    mountPath: /var/run/restful-op/body-secret
+                    readOnly: true
+            volumes:
+              - name: body-secret
+                secret:
+                  secretName: {{ .Values.bodySecret | quote }}
+      {{- end }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: restful-op-delete-{{ $name }}
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-delete
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            serviceAccountName: restful-op-{{ $name }}
+      {{- if .Values.hookImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.hookImagePullSecret | quote }}
+      {{- end }}
+            restartPolicy: Never
+            containers:
+              - name: restful-op
+                image: {{ .Values.__image__ | quote }}
+                env:
+                  - name: MODE
+                    value: "delete"
+                  - name: BASE_URL
+                    value: {{ .Values.baseURL | quote }}
+                  - name: METHOD
+                    value: {{ default "DELETE" .Values.deleteMethod | quote }}
+                  - name: DELETE_PATH
+                    value: {{ .Values.deletePath | default "" | quote }}
+                  - name: DELETE_ID_KEY
+                    value: {{ .Values.deleteIDKey | default "" | quote }}
+                  - name: OUTPUT_SECRET
+                    value: {{ .Values.outputSecret | quote }}
+                  - name: INSECURE
+                    value: {{ .Values.insecure | default "false" | quote }}
+                  - name: RETRY_COUNT
+                    value: {{ .Values.retryCount | default "30" | quote }}
+                  - name: RETRY_DELAY
+                    value: {{ .Values.retryDelay | default "10" | quote }}
+      {{- if .Values.credentialsSecret }}
+                  - name: AUTHORIZATION
+                    valueFrom:
+                      secretKeyRef:
+                        name: {{ .Values.credentialsSecret | quote }}
+                        key: authorization
+      {{- end }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "restful-op.script" . | indent 14 }}
+
+      {{- define "restful-op.script" -}}
+      set -eu
+
+      # Install `curl` and `jq` if image does not contain them.
+      # Stop if either command is unavailable.
+      if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        apk add --no-cache curl jq >/dev/null 2>&1 || true
+      fi
+      if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        echo "curl and jq are required in the hook image; set the App 'image' parameter to one that provides them" >&2
+        exit 1
+      fi
+
+      API="https://kubernetes.default.svc"
+      SA=/var/run/secrets/kubernetes.io/serviceaccount
+      TOKEN="$(cat $SA/token)"
+      CA="$SA/ca.crt"
+      NS="$(cat $SA/namespace)"
+
+      INSECURE_FLAG=""
+      [ "${INSECURE}" = "true" ] && INSECURE_FLAG="-k"
+
+      AUTH_HEADER=""
+      if [ -n "${AUTHORIZATION:-}" ]; then
+        AUTH_HEADER="Authorization: ${AUTHORIZATION}"
+      fi
+
+      # Retry curl for connection failures and HTTP 5xx responses.
+      http() {
+        method="$1"; url="$2"; data="${3:-}"
+        attempt=0
+        while :; do
+          attempt=$((attempt+1))
+          body_file="$(mktemp)"
+          if [ -n "$data" ]; then
+            code="$(curl -sS $INSECURE_FLAG -o "$body_file" -w '%{http_code}' \
+              -X "$method" -H 'Content-Type: application/json' ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+              --data "$data" "$url" || echo 000)"
+          else
+            code="$(curl -sS $INSECURE_FLAG -o "$body_file" -w '%{http_code}' \
+              -X "$method" ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$url" || echo 000)"
+          fi
+          HTTP_BODY="$(cat "$body_file")"; rm -f "$body_file"
+          if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
+            if [ "$attempt" -ge "${RETRY_COUNT}" ]; then
+              echo "request $method $url failed after $attempt attempts (last code $code): $HTTP_BODY" >&2
+              return 1
+            fi
+            sleep "${RETRY_DELAY}"
+            continue
+          fi
+          HTTP_CODE="$code"
+          return 0
+        done
+      }
+
+      # Update one key in existing output Secret.
+      patch_secret_key() {
+        key="$1"; val="$2"
+        b64="$(printf '%s' "$val" | base64 | tr -d '\n')"
+        code="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" -H "Authorization: Bearer $TOKEN" \
+          -H 'Content-Type: application/merge-patch+json' -X PATCH \
+          "$API/api/v1/namespaces/$NS/secrets/$OUTPUT_SECRET" \
+          --data "{\"data\":{\"$key\":\"$b64\"}}")"
+        if [ "$code" -ge 300 ]; then
+          echo "failed to patch key '$key' into secret $OUTPUT_SECRET: HTTP $code" >&2
+          return 1
+        fi
+      }
+
+      get_secret_key() {
+        key="$1"
+        url="$API/api/v1/namespaces/$NS/secrets/$OUTPUT_SECRET"
+        curl -sS --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$url" \
+          | jq -r ".data[\"$key\"] // empty" | base64 -d 2>/dev/null || true
+      }
+
+      if [ "${MODE}" = "delete" ]; then
+        [ -z "${DELETE_PATH}" ] && { echo "no deletePath set, nothing to tear down"; exit 0; }
+        path="${DELETE_PATH}"
+        if [ -n "${DELETE_ID_KEY}" ]; then
+          id="$(get_secret_key "${DELETE_ID_KEY}")"
+          [ -z "$id" ] && { echo "no id found in secret for teardown, treating as already gone"; exit 0; }
+          path="$(printf '%s' "$path" | sed "s#{id}#$id#g")"
+        fi
+        if http "${METHOD}" "${BASE_URL}${path}"; then
+          echo "teardown ${METHOD} ${path} -> ${HTTP_CODE}"
+        fi
+        # Continue delete when resource does not exist or delete fails.
+        exit 0
+      fi
+
+      # Read sensitive body fields from mounted Secret files.
+      # Do not pass credentials as parameters or command arguments.
+      BODY_JSON="${BODY}"
+      if [ -n "${BODY_SECRET_FIELDS:-}" ]; then
+        [ -z "$BODY_JSON" ] && BODY_JSON='{}'
+        printf '%s\n' "${BODY_SECRET_FIELDS}" > /tmp/restful-op-body-fields
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          field="${line%%=*}"
+          key="${line#*=}"
+          file="${BODY_SECRET_DIR}/${key}"
+          if [ ! -f "$file" ]; then
+            echo "bodySecret key '$key' not found in mounted secret" >&2
+            exit 1
+          fi
+          BODY_JSON="$(printf '%s' "$BODY_JSON" | jq -c --arg f "$field" --rawfile v "$file" '.[$f]=$v')" || {
+            echo "failed to merge body field '$field' (is the body a JSON object?)" >&2
+            exit 1
+          }
+        done < /tmp/restful-op-body-fields
+      fi
+
+      # Use read result when `readPath` finds resource.
+      # Create resource when `readFilter` finds no match.
+      RESP=""
+      if [ -n "${READ_PATH}" ]; then
+        if http GET "${BASE_URL}${READ_PATH}" && [ "${HTTP_CODE}" -lt 300 ]; then
+          if [ -n "${READ_FILTER:-}" ]; then
+            sel="$(printf '%s' "$HTTP_BODY" | jq -c "${READ_FILTER}" 2>/dev/null || true)"
+            if [ -n "$sel" ] && [ "$sel" != "null" ]; then
+              echo "read ${READ_PATH} matched an existing resource, reusing it"
+              RESP="$sel"
+            else
+              echo "read ${READ_PATH} found no match, will create"
+            fi
+          else
+            echo "read ${READ_PATH} -> ${HTTP_CODE}, reusing existing resource"
+            RESP="${HTTP_BODY}"
+          fi
+        fi
+      fi
+      if [ -z "$RESP" ]; then
+        http "${METHOD}" "${BASE_URL}${PATH_}" "${BODY_JSON}" || exit 1
+        if [ "${HTTP_CODE}" -ge 300 ]; then
+          echo "create ${METHOD} ${PATH_} failed: ${HTTP_CODE} ${HTTP_BODY}" >&2
+          exit 1
+        fi
+        RESP="${HTTP_BODY}"
+      fi
+
+      # Write each declared output.
+      # Stop hook when output extraction or Secret update fails.
+      printf '%s\n' "${OUTPUTS}" > /tmp/restful-op-outputs
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        k="${line%%=*}"
+        filter="${line#*=}"
+        v="$(printf '%s' "$RESP" | jq -r "$filter // empty")"
+        if [ -z "$v" ]; then
+          echo "output '$k' (filter '$filter') resolved to nothing in response: $RESP" >&2
+          exit 1
+        fi
+        patch_secret_key "$k" "$v"
+        echo "wrote output '$k'"
+      done < /tmp/restful-op-outputs
+      {{- end -}}
+  # The Platform allows a Stack to read task outputs only from namespaces its Apps actually
+  # deployed into, and it takes that from the Helm RELEASE namespace: for a templateRef task, the
+  # referenced App's defaultNamespace. The `namespace` parameter below moves the manifests but not
+  # the release, so leaving this as `default` makes every output declared over `runai-backend` fail
+  # with "which this stack has not deployed into". Dedicated control-plane tenancy hid that, because its `backend` task
+  # deploys the control plane into `runai-backend` and the allow-list is stack-wide.
+  defaultNamespace: runai-backend
+  description: Performs an imperative REST call as a Helm hook and stores the response
+    in a Secret, emulating the Terraform magodo/restful `operation` resource. Intended
+    as a Stack step that hands API output (e.g. run:ai cluster credentials) to later
+    steps.
+  displayName: REST Operation
+  icon: https://raw.githubusercontent.com/kubernetes/community/master/icons/png/resources/labeled/secret-128.png
+  parameters:
+  - description: Namespace for the App's resources (output Secret, RBAC, hook Jobs)
+      and for the bodySecret/credentialsSecret lookups. Defaults to the release namespace;
+      set it explicitly when used as a templateRef Stack step, which cannot set defaultNamespace.
+      Keep it equal to defaultNamespace when the task declares outputs, or the output namespace is
+      not one the stack deployed into and capture fails.
+    label: Target namespace
+    type: string
+    variable: namespace
+  - description: API base URL, e.g. https://runai.example.com
+    label: Base URL
+    required: true
+    type: string
+    variable: baseURL
+  - defaultValue: POST
+    description: HTTP method for the create call.
+    label: Create method
+    type: string
+    variable: createMethod
+  - description: Path for the create call, e.g. /api/v1/clusters
+    label: Create path
+    required: true
+    type: string
+    variable: createPath
+  - description: JSON request body for the create call.
+    label: Request body
+    type: multiline
+    variable: body
+  - description: Name of a pre-existing Secret in the target namespace whose selected
+      keys are merged into the request body. Use this to keep credentials out of parameters
+      when the API expects them in the body (e.g. a password grant).
+    label: Body Secret name
+    type: string
+    variable: bodySecret
+  - description: One 'bodyField=secretKey' per line; each secret key's value is set
+      as a top-level string field 'bodyField' in the request body. Requires bodySecret
+      and a JSON-object body.
+    label: Body Secret fields
+    type: multiline
+    variable: bodySecretFields
+  - description: Optional GET path used for an idempotent existence check; on a 2xx
+      its response is reused instead of creating.
+    label: Read path
+    type: string
+    variable: readPath
+  - description: Optional jq filter applied to the readPath response to select an
+      existing resource for idempotent reuse (find-by-name). Create is skipped only
+      when this yields a non-empty, non-null value; otherwise it falls through to
+      create. Without it, any 2xx readPath response is reused as-is.
+    label: Read filter
+    type: string
+    variable: readFilter
+  - description: One 'secretKey=jqFilter' per line; each jq filter is evaluated against
+      the response and written to the output Secret. Every key must resolve to a non-null
+      value or the hook fails.
+    label: Outputs
+    required: true
+    type: multiline
+    variable: outputs
+  - description: Name of the Secret to create/populate with the outputs.
+    label: Output Secret name
+    required: true
+    type: string
+    variable: outputSecret
+  - description: Name of a pre-existing Secret in this namespace whose 'authorization'
+      key is sent as the Authorization header. Never pass credentials as a parameter.
+    label: Credentials Secret name
+    type: string
+    variable: credentialsSecret
+  - defaultValue: DELETE
+    description: HTTP method for the teardown call.
+    label: Delete method
+    type: string
+    variable: deleteMethod
+  - description: Optional teardown path; '{id}' is replaced with the value of the
+      output key named by deleteIDKey.
+    label: Delete path
+    type: string
+    variable: deletePath
+  - description: Output Secret key whose value is substituted for '{id}' in deletePath
+      at teardown.
+    label: Delete ID key
+    type: string
+    variable: deleteIDKey
+  - defaultValue: "false"
+    description: Skip TLS certificate verification.
+    label: Skip TLS verify
+    type: boolean
+    variable: insecure
+  - defaultValue: "30"
+    description: Number of retries for transient (connection / 5xx) failures.
+    label: Retry count
+    type: number
+    variable: retryCount
+  - defaultValue: "10"
+    description: Seconds between retries.
+    label: Retry delay (s)
+    type: number
+    variable: retryDelay
+  - description: (Optional) If an imagePullSecret is required to pull the image used for the AppInstance
+      specify it's name here.  Otherwise, you can ignore.
+    label: Hook image pull Secret
+    type: string
+    variable: hookImagePullSecret
+  timeout: 15m
+  wait: true

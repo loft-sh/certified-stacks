@@ -1,0 +1,180 @@
+# Creates a tenant cluster, its run:ai registration, and an owned run:ai StackInstance in that tenant.
+#
+# Apply order, all of it before this template is used:
+#   1. kubectl apply -f apps/
+#   2. kubectl apply -f stacktemplate-host.yaml -f stacktemplate-registration.yaml -f stacktemplate.yaml
+#   3. Install the shared host foundation once   (example/stackinstance-host.yaml)
+#
+# There is no per-tenant step. Creating a cluster from this template registers it: `spaceTemplate`
+# writes a `run-ai-central-control-plane-registration` StackInstance named after the cluster into the cluster's own
+# space, on the Control Plane Cluster. Nothing is copied out of that registration and pasted back in
+# either: the three Secret mappings below are how the tenant learns where its control plane is, which
+# cluster it registered as, what its client secret is, how to pull run:ai images, and which CA to
+# trust. The tenant Stack takes no inputs at all.
+#
+# Set `tenantSlug` ONLY when an administrator already registered this tenant, under a name that is
+# not this cluster's. It suppresses the owned registration and points the facts mapping at the
+# existing one. Setting it while a registration under the cluster's own name is what you wanted
+# produces two registrations adopting one run:ai cluster, and either can deregister the other.
+#
+# This is not a one-shot installation. The run:ai control plane and the NVIDIA GPU Operator are
+# shared host components installed once by the host Stack; this tenant installs neither.
+apiVersion: storage.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: runai-tenant-central-control-plane
+spec:
+  displayName: Run:ai central-control-plane tenant
+  description: >-
+    Creates a tenant cluster, registers it with the shared run:ai control plane, and deploys the
+    run:ai cluster agent through deploy.stacks. This is not a one-shot host installation: it reuses
+    shared host infrastructure. Before creation, platform operators must install the shared host
+    foundation, provide ingress-nginx with IngressClass `nginx` and its LoadBalancer IPv4 address,
+    and label the GPU nodes this tenant may use. Operate and delete shared host infrastructure
+    outside this tenant lifecycle.
+  owner:
+    user: admin
+  parameters:
+    - variable: nodeSelectorValue
+      # Value must be unique to one tenant. Each tenant scheduler assumes it owns all visible GPU
+      # capacity. Shared nodes can receive conflicting allocations. Nodes without matching label are
+      # invisible; a tenant with no matching nodes cannot schedule workloads.
+      description: Node label value for tenant GPU nodes.
+      type: string
+      required: true
+    - variable: nodeSelectorLabel
+      description: Host node label key that assigns nodes to tenants. Set by host foundation policy.
+      type: string
+      required: true
+      defaultValue: runai.vcluster.com/tenant
+    - variable: tenantImagePullSecret
+      # This Secret supplies tenant workload ServiceAccount and registration hook Jobs.
+      description: Use this Secret to pull images for tenant workloads and hook Jobs.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    - variable: controlPlaneClusterName
+      # Change only when Platform connected cluster is not named loft-cluster.
+      description: Name of Platform control-plane cluster.
+      type: string
+      defaultValue: loft-cluster
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: tenantSlug
+      # This suppresses template-created registration and maps tenant facts Secret from named
+      # registration. Leave empty to register cluster under its own name. A missing registration
+      # leaves tenant waiting for facts Secret.
+      description: The name of a pre-existing run:ai cluster.  Otherwise, leave this field blank.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    # Keep this input name for callers that already disable the former CronJob.
+    - variable: createCustomLinkCronJob
+      label: Create Run:ai custom-link Job
+      description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
+      type: boolean
+      defaultValue: "true"
+  template:
+    # There should be a one-to-one relationship between a run:ai cluster and this tenant cluster.  For a run:ai cluster
+    # that was registered first, you can specify the `tenantSlug` (e.g. runai-tenant) and it will be adopted.
+    # If unset, the names will be made to match and the registration will happen as part of creation.
+    spaceTemplate:
+      objects: |-
+        {{- if not .Values.tenantSlug }}
+        apiVersion: storage.loft.sh/v1
+        kind: StackInstance
+        metadata:
+          name: runai-reg-{{ .Values.loft.virtualClusterName }}
+        spec:
+          displayName: "run:ai registration for {{ .Values.loft.virtualClusterName }}"
+          owner:
+            user: admin
+          destination:
+            cluster:
+              name: {{ .Values.controlPlaneClusterName }}
+          templateRef:
+            name: run-ai-central-control-plane-registration
+          inputs:
+            tenantSlug: {{ .Values.loft.virtualClusterName }}
+            hookImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+        {{- end }}
+      apps:
+        - name: runai-custom-link
+          parameters: |
+            createCustomLinkJob: {{ .Values.createCustomLinkCronJob }}
+            controlPlaneClusterName: "{{ .Values.controlPlaneClusterName }}"
+            tenantImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+    instanceTemplate:
+      metadata:
+        labels:
+          loft.sh/stacks-sync: "true"
+          runai.loft.sh/tenancy-model: central-control-plane
+    helmRelease:
+      chart:
+        version: "0.36.1"
+      values: |-
+        {{ if .Values.tenantImagePullSecret }}
+        controlPlane:
+          advanced:
+            workloadServiceAccount:
+              imagePullSecrets:
+                - name: {{ .Values.tenantImagePullSecret }}
+          distro:
+            k8s:
+              scheduler:
+                enabled: true
+        {{ else }}
+        controlPlane:
+          distro:
+            k8s:
+              scheduler:
+                enabled: true
+        {{ end }}
+        policies:
+          networkPolicy:
+            enabled: false
+        sync:
+          fromHost:
+            nodes:
+              enabled: true
+              selector:
+                labels:
+                  {{ .Values.nodeSelectorLabel }}: "{{ .Values.nodeSelectorValue }}"
+            runtimeClasses:
+              enabled: true
+            ingressClasses:
+              enabled: true
+            # The tenant's entire configuration, as three Secrets. Nothing here is a parameter, which
+            # is the point: a pasted cluster UID or client secret goes stale silently, and a pasted CA
+            # breaks every agent at once on rotation.
+            secrets:
+              enabled: true
+              mappings:
+                byName:
+                  # Trust the shared control plane without anyone handling a certificate.
+                  "runai/runai-ca-cert": "runai/runai-ca-cert"
+                  # This tenant's registration facts, written by the registration above unless
+                  # `tenantSlug` names an existing one. Renamed on the way in, so the tenant Stack
+                  # needs no identity input and every tenant reads the same fixed name.
+                  "runai-backend/runai-tenant-facts-{{ if .Values.tenantSlug }}{{ .Values.tenantSlug }}{{ else }}{{ .Values.loft.virtualClusterName }}{{ end }}": "runai/runai-tenant-facts"
+                  # The JFrog credential the Control Plane Cluster already holds. Renamed because the
+                  # tenant Stack re-creates `runai-reg-creds` itself: the synced copy is read-only.
+                  "runai/runai-reg-creds": "runai/runai-reg-creds-host"
+          toHost:
+            ingresses:
+              enabled: true
+            persistentVolumes:
+              enabled: true
+            persistentVolumeClaims:
+              enabled: true
+        networking:
+          advanced:
+            fallbackHostCluster: true
+            proxyKubelets:
+              byIP: true
+        deploy:
+          ingressNginx:
+            enabled: false
+          stacks:
+            - name: runai
+              templateRef:
+                name: run-ai-central-control-plane
