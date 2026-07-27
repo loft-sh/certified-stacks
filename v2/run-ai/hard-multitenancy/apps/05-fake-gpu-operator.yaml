@@ -1,0 +1,52 @@
+# Label nodes in bootstrap step before you apply this App.
+# Cluster step creates metrics Service in `runai` namespace.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-05-fake-gpu-operator
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 5] Fake GPU Operator'
+  description: Publishes simulated NVIDIA GPUs on nodes pre-labeled run.ai/simulated-gpu-node-pool=default.
+  defaultNamespace: gpu-operator
+  wait: true
+  timeout: 5m
+  config:
+    chart:
+      name: fake-gpu-operator
+      repoURL: oci://ghcr.io/run-ai/fake-gpu-operator
+      version: 0.2.0
+    values: |-
+      topology:
+        nodePools:
+          default:
+            gpuProduct: "{{ .Values.fakeGpuProduct }}"
+            gpuCount: {{ .Values.fakeGpuCount }}
+            gpuMemory: {{ .Values.fakeGpuMemory }}
+      prometheus:
+        url: "http://prometheus-operated.{{ .Values.runaiNamespace }}:9090"
+  parameters:
+    - variable: runaiNamespace
+      label: run:ai cluster namespace
+      type: string
+      required: true
+      defaultValue: runai
+      validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+    - variable: fakeGpuProduct
+      label: Simulated GPU product
+      type: string
+      required: true
+      defaultValue: NVIDIA-H100-80GB-HBM3
+    - variable: fakeGpuCount
+      label: Simulated GPUs per labeled node
+      type: number
+      required: true
+      defaultValue: "4"
+      min: 1
+    - variable: fakeGpuMemory
+      label: Simulated GPU memory (MiB)
+      type: number
+      required: true
+      defaultValue: "81559"
+      min: 1

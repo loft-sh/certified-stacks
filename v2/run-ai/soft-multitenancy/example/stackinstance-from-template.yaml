@@ -1,0 +1,31 @@
+# Use StackInstance name `runai`.
+# Charts require releases `runai-backend` and `runai-cluster`.
+# Apply this file or `stackinstance.yaml`. Do not apply both files.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: runai
+spec:
+  displayName: "run:ai self-hosted (full infra, nip.io)"
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: runai-selfhosted-nipio-fake-gpu
+  # Set `runaiRegistryCredentials`, `storageClass`, and host ingress address before apply.
+  inputs:
+    tenant: runai
+    runaiRegistryCredentials: "<JFROG_TOKEN>"
+    storageClass: do-block-storage
+    hostIngressAddress: "<HOST_NGINX_LOADBALANCER_IPV4>"
+    clusterName: runai
+    # TLS defaults to a self-signed certificate. See README section "TLS".
+    # Use a trusted certificate before production use. Point at an existing Secret in the
+    # `runai` namespace holding tls.crt, tls.key and optionally ca.crt:
+    # tlsMode: user-provided
+    # userTlsSecretName: my-runai-tls
+    # Set both of these only when that chain is publicly trusted:
+    # customCAEnabled: "false"
+    # skipTLSVerify: "false"

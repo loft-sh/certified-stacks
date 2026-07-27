@@ -1,0 +1,55 @@
+# Creates a tenant vCluster and an owned Run:ai StackInstance in that tenant.
+# Apply StackTemplate and App manifests before this template.
+apiVersion: storage.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: runai-tenant-fake-gpu
+spec:
+  displayName: Run:ai tenant (fake GPU)
+  description: Creates a tenant vCluster, then deploys Run:ai into that tenant through deploy.stacks.
+  owner:
+    user: admin
+  parameters:
+    - variable: tenant
+      type: string
+      required: true
+      defaultValue: runai-tenant
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: storageClass
+      type: string
+      required: true
+      defaultValue: do-block-storage
+    - variable: runaiRegistryCredentials
+      type: password
+      required: true
+    # Optional. FQDN for the run:ai control plane (e.g. runai.example.com). DNS for it and `*.`
+    # under it must resolve to the ingress-nginx LoadBalancer IP. Empty derives
+    # `<tenant>.<lb-ip>.nip.io` after the LoadBalancer IP is assigned.
+    - variable: domain
+      type: string
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+  template:
+    instanceTemplate:
+      metadata:
+        labels:
+          loft.sh/stacks-sync: "true"
+    helmRelease:
+      chart:
+        version: "0.36.1"
+      values: |-
+        deploy:
+          stacks:
+            - name: runai
+              templateRef:
+                name: runai-selfhosted-nipio
+              inputs:
+                tenant: {{ .Values.tenant }}
+                # Services synced to vCluster host receive vCluster-name prefix.
+                ingressControllerServiceName: "{{ .Values.loft.virtualClusterName }}-runai-ingress-ingress-nginx-controller" 
+                clusterName: {{ .Values.tenant }}
+                storageClass: {{ .Values.storageClass }}
+                runaiRegistryCredentials: {{ .Values.runaiRegistryCredentials }}
+                # Empty keeps the derived nip.io FQDN.
+                domain: "{{ .Values.domain }}"
+                # TLS defaults to a self-signed certificate. See README section "TLS" for how to
+                # supply a trusted one; add tlsMode/userTls* here and as template parameters above.

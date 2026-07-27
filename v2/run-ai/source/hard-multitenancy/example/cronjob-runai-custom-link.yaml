@@ -1,0 +1,277 @@
+# Backfills the `loft.sh/custom-links` RunAI_UI link on tenant clusters, so the platform UI links
+# to each tenant's run:ai control plane.
+#
+# Nothing writes that link at creation time. The vCluster templates cannot: with no `domain` the
+# FQDN is derived from the ingress LoadBalancer, which does not exist yet when the instance is
+# created. On the generic templates that FQDN is `<tenant>.<lb-ip>.nip.io`; on AWS it is the ingress
+# NLB's own hostname. This CronJob closes the gap after the fact, and also covers tenants created
+# with an explicit `domain`.
+#
+# Apply it manually on the cluster that runs vCluster Platform. It is not part of the Stack and no
+# Stack step depends on it.
+#
+#   kubectl apply -f example/cronjob-runai-custom-link.yaml
+#
+# Each run:
+#   1. lists VirtualClusterInstances labelled `loft.sh/stacks-sync: "true"` in every project namespace,
+#   2. keeps those with no `loft.sh/custom-links` annotation (absent or empty),
+#   3. reads the tenant's `vc-<name>` kubeconfig Secret and looks inside the tenant cluster for the
+#      run:ai control-plane Ingress, taking any non-wildcard host it serves,
+#   4. sets `loft.sh/custom-links: RunAI_UI=https://<host>` on the instance.
+#
+# Opt in per tenant by labelling the instance. The template does not set this label, so add it to
+# `instanceTemplate.metadata.labels` in your copy of the template, or label existing instances:
+#
+#   kubectl -n p-<project> label virtualclusterinstance <name> loft.sh/stacks-sync=true
+#
+# The job is idempotent and skips tenants that are not ready yet, so it is safe to leave running.
+# It also repairs instances whose annotation is reset, for example by a template re-apply.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runai-stacks-sync
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runai-custom-link
+  namespace: runai-stacks-sync
+---
+# Instances are patched through `storage.loft.sh`, the CRD the platform stores them in, because
+# `management.loft.sh` authorizes against platform users and teams rather than Kubernetes RBAC.
+# The two are the same object, so the platform UI shows the annotation either way.
+#
+# `secrets` is `get` only, never `list`: the job reads exactly `vc-<name>` in the namespace named by
+# the instance's own `spec.clusterRef`, and cannot enumerate Secrets it was not pointed at.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: runai-custom-link
+rules:
+  - apiGroups: ["storage.loft.sh"]
+    resources: ["virtualclusterinstances"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: runai-custom-link
+subjects:
+  - kind: ServiceAccount
+    name: runai-custom-link
+    namespace: runai-stacks-sync
+roleRef:
+  kind: ClusterRole
+  name: runai-custom-link
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: runai-custom-link
+  namespace: runai-stacks-sync
+spec:
+  schedule: "*/5 * * * *"
+  # A run that overlaps its successor would patch the same instances twice.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Tenants are visited one at a time with a 20s API timeout each. Raise this if you run more
+      # labelled tenants than this budget covers.
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: runai-custom-link
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: link
+              # Same pinned hook image the Stack Jobs use. Must provide kubectl, jq and sh.
+              image: "docker.io/bitnami/kubectl@sha256:c62a62db80e777acdee87f76bc6f06a95239ad2ff210bf78f585e39e33da98e2"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: KUBECACHEDIR
+                  value: /tmp/.kube-cache
+                # Instances to consider. Every match is inspected, no matter which project it is in.
+                - name: INSTANCE_SELECTOR
+                  value: loft.sh/stacks-sync=true
+                # Platform name of the cluster this CronJob runs in. Instances placed on a
+                # connected cluster are skipped: their Secrets are not readable from here.
+                - name: LOCAL_CLUSTER
+                  value: loft-cluster
+                # Where the run:ai control plane Ingress lives inside the tenant cluster, and how to
+                # single it out. Both come from `apps/06-control-plane.yaml`.
+                - name: RUNAI_NAMESPACE
+                  value: runai-backend
+                - name: INGRESS_SELECTOR
+                  value: app.kubernetes.io/part-of=control-plane
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -u
+
+                  for t in kubectl jq base64; do
+                    command -v "$t" >/dev/null || { echo "missing $t; use an image that provides it" >&2; exit 1; }
+                  done
+
+                  ANNOTATION=loft.sh/custom-links
+                  LINK_LABEL=RunAI_UI
+                  d="$(mktemp -d)"
+                  status=0
+
+                  # Listed separately from the jq filter below: in a pipeline only the last exit
+                  # status survives, and jq happily reports success on empty input.
+                  kubectl get virtualclusterinstances.storage.loft.sh --all-namespaces \
+                    -l "$INSTANCE_SELECTOR" -o json > "$d/instances.json" || {
+                    echo "[link] cannot list VirtualClusterInstances" >&2
+                    exit 1
+                  }
+
+                  # An empty annotation is the state the template leaves behind when `domain` is
+                  # unset, so treat it the same as an absent one.
+                  jq -r --arg a "$ANNOTATION" '
+                    .items[]
+                    | select(((.metadata.annotations // {})[$a] // "") == "")
+                    | [ .metadata.namespace,
+                        .metadata.name,
+                        (.spec.clusterRef.cluster // ""),
+                        (.spec.clusterRef.namespace // ""),
+                        (.spec.clusterRef.virtualCluster // "")
+                      ] | @tsv' "$d/instances.json" > "$d/todo.tsv" || {
+                    echo "[link] cannot parse VirtualClusterInstance list" >&2
+                    exit 1
+                  }
+
+                  [ -s "$d/todo.tsv" ] || { echo "[link] no instances need a link"; exit 0; }
+
+                  # Read a Secret key into a file. Non-zero when the Secret or the key is absent.
+                  read_secret_key() {
+                    kubectl -n "$1" get secret "$2" -o json 2>/dev/null \
+                      | jq -r --arg k "$3" '.data[$k] // empty' \
+                      | base64 -d > "$4" 2>/dev/null || return 1
+                    [ -s "$4" ] || return 1
+                  }
+
+                  # Read from a file rather than a pipe: a piped loop runs in a subshell, where
+                  # `status` updates would be lost. IFS is one tab so empty fields survive.
+                  while IFS="$(printf '\t')" read -r vci_ns vci_name cluster vc_ns vc_name; do
+                    id="$vci_ns/$vci_name"
+
+                    if [ "$cluster" != "$LOCAL_CLUSTER" ]; then
+                      echo "[link] $id: on cluster '$cluster', not '$LOCAL_CLUSTER'; skipping"
+                      continue
+                    fi
+                    if [ -z "$vc_ns" ] || [ -z "$vc_name" ]; then
+                      echo "[link] $id: spec.clusterRef has no namespace or virtualCluster; skipping"
+                      continue
+                    fi
+
+                    # The tenant kubeconfig. The Secret ships a `config` key pointing at
+                    # localhost:8443 for port-forwarding, so use the raw material with an
+                    # in-cluster server instead. Clear the files first: no iteration may ever fall
+                    # back to the previous tenant's credentials.
+                    rm -f "$d/ca.crt" "$d/client.crt" "$d/client.key"
+                    ok=yes
+                    read_secret_key "$vc_ns" "vc-$vc_name" certificate-authority "$d/ca.crt" || ok=no
+                    read_secret_key "$vc_ns" "vc-$vc_name" client-certificate "$d/client.crt" || ok=no
+                    read_secret_key "$vc_ns" "vc-$vc_name" client-key "$d/client.key" || ok=no
+                    if [ "$ok" = no ]; then
+                      echo "[link] $id: cannot read kubeconfig Secret vc-$vc_name in $vc_ns; skipping"
+                      continue
+                    fi
+
+                    # The API server certificate carries the bare release name as a SAN, not the
+                    # fully qualified Service name, so verify against that name over the Service
+                    # address. A paused or starting tenant just fails to connect and is retried on
+                    # the next run.
+                    #
+                    # Kept out of the jq pipeline so those two outcomes stay distinguishable: in a
+                    # pipeline only jq's status survives and jq reports success on empty input, so an
+                    # unreachable tenant used to log the same line as one with no Ingress yet.
+                    if ! kubectl \
+                      --server="https://$vc_name.$vc_ns.svc:443" \
+                      --tls-server-name="$vc_name" \
+                      --certificate-authority="$d/ca.crt" \
+                      --client-certificate="$d/client.crt" \
+                      --client-key="$d/client.key" \
+                      --request-timeout=20s \
+                      -n "$RUNAI_NAMESPACE" get ingress -l "$INGRESS_SELECTOR" -o json \
+                      > "$d/ingress.json" 2> "$d/ingress.err"; then
+                      echo "[link] $id: cannot reach tenant API: $(tr '\n' ' ' < "$d/ingress.err" | cut -c1-200); skipping"
+                      continue
+                    fi
+
+                    # Whatever host the control-plane Ingress serves is the right link, whether that
+                    # is a derived nip.io address, a load balancer hostname, or a domain the operator
+                    # supplied. Wildcard rules are dropped here and not at the validation below,
+                    # which would read `*.` as malformed and fail the run.
+                    hosts="$(jq -r '[ .items[].spec.rules[]?.host
+                                      | select(type == "string")
+                                      | select(startswith("*") | not) ]
+                                    | unique | .[]' "$d/ingress.json")"
+                    host="$(printf '%s\n' "$hosts" | head -n 1)"
+
+                    if [ -z "$host" ]; then
+                      echo "[link] $id: no control-plane Ingress host in $RUNAI_NAMESPACE yet; skipping"
+                      continue
+                    fi
+
+                    # `unique` sorts, so a tie is broken alphabetically. That is arbitrary rather
+                    # than wrong, but never choose silently: the log has to show what was passed up.
+                    if [ "$(printf '%s\n' "$hosts" | grep -c .)" -gt 1 ]; then
+                      echo "[link] $id: several control-plane hosts, using '$host' of:" \
+                        "$(printf '%s ' $hosts)" >&2
+                    fi
+
+                    # The host comes from a tenant-owned Ingress and ends up in a UI link, so accept
+                    # only a plain lowercase DNS name.
+                    case "$host" in
+                      *[!a-z0-9.-]*|-*|.*|*..*)
+                        echo "[link] $id: refusing malformed host '$host'" >&2
+                        status=1
+                        continue
+                        ;;
+                    esac
+
+                    patch="$(jq -n --arg a "$ANNOTATION" --arg v "$LINK_LABEL=https://$host" \
+                      '{metadata: {annotations: {($a): $v}}}')"
+                    if kubectl -n "$vci_ns" patch virtualclusterinstances.storage.loft.sh "$vci_name" \
+                      --type=merge -p "$patch" >/dev/null; then
+                      echo "[link] $id: set $ANNOTATION to $LINK_LABEL=https://$host"
+                    else
+                      echo "[link] $id: patch failed" >&2
+                      status=1
+                    fi
+                  done < "$d/todo.tsv"
+
+                  exit "$status"
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

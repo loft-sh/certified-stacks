@@ -31,3 +31,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+graphify-out
+.pi-subagents
+issues
+scripts

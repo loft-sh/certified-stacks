@@ -1,0 +1,52 @@
+# AWS variant of `runai-step-02-ingress-nginx`. Use it with `stacktemplate-aws.yaml`.
+# Requires the AWS Load Balancer Controller in the cluster; the annotations below are its.
+# Update `fromResource` Service name if you rename instance or ingress step.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-02-ingress-nginx-aws
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 2 aws] Ingress NGINX (NLB)'
+  description: Ingress controller exposed through an AWS Network Load Balancer.
+  defaultNamespace: ingress-nginx
+  wait: true
+  # Helm's wait does not return until the Service has an address, and an NLB takes three to four
+  # minutes to provision, so this is longer than the 5m the generic ingress step uses.
+  timeout: 10m
+  config:
+    chart:
+      name: ingress-nginx
+      repoURL: https://kubernetes.github.io/ingress-nginx
+      version: 4.15.1
+    values: |-
+      controller:
+        kind: DaemonSet
+        # No hostPort. Host ports 80/443 are a per-node singleton, so binding them limits the
+        # node pool to one tenant's controller. Traffic reaches pods through the LoadBalancer.
+        service:
+          type: LoadBalancer
+          # Hardcoded rather than templated: the rest of this Stack only interpolates scalars into
+          # chart values, and a whole annotation block would need `nindent`.
+          annotations:
+            service.beta.kubernetes.io/aws-load-balancer-type: external
+            service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+            service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+            service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+            # Required, not tuning. The Stack's own hook Jobs and the run:ai cluster agent call the
+            # control-plane FQDN from inside this cluster, which resolves to the NLB. With client
+            # IP preservation on, a connection routed back to the node it came from is dropped by
+            # AWS, and every ingress-nginx pod is a target, so registration fails intermittently.
+            # The cost is that ingress-nginx sees NLB addresses instead of real client IPs.
+            service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: preserve_client_ip.enabled=false
+        ingressClass: "{{ .Values.ingressClass }}"
+        ingressClassResource:
+          name: "{{ .Values.ingressClass }}"
+  parameters:
+    - variable: ingressClass
+      label: Ingress class
+      type: string
+      required: true
+      defaultValue: nginx
+      validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$

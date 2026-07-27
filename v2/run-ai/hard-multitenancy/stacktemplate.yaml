@@ -1,0 +1,227 @@
+# Use this template only with GPU nodes.
+# Use `stacktemplate-fake-gpu.yaml` for simulated GPUs.
+# Instances from this template must use name `runai`.
+# Do not change GPU templates on a live instance. Delete old GPU AppInstance first, or set `prunePolicy: Prune`.
+apiVersion: storage.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: runai-selfhosted-nipio
+spec:
+  displayName: "run:ai self-hosted (full infra, nip.io, real GPU operator)"
+  description: >-
+    Full run:ai self-hosted infrastructure on a cloud cluster with no manual preflight:
+    registry Secrets, ingress-nginx, self-signed TLS for a derived nip.io FQDN (or an
+    optional user-provided domain), the real NVIDIA GPU Operator, the control plane,
+    three-call cluster registration, and the cluster components.
+  inputs:
+    - { variable: tenant, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    # Use host-visible service name for vCluster destinations.
+    - { variable: ingressControllerServiceName, type: string, required: true, defaultValue: runai-ingress-ingress-nginx-controller, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
+    # Keep this version equal to chart versions in `apps/06-control-plane.yaml` and `apps/10-cluster.yaml`.
+    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86" }
+    - { variable: clusterName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    # Optional. FQDN for the control plane (e.g. runai.example.com). DNS for it and `*.` under it
+    # must resolve to the ingress-nginx LoadBalancer IP (published output `ingressIP`).
+    # Empty derives `<tenant>.<lb-ip>.nip.io` after the LoadBalancer IP is assigned.
+    - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
+    - { variable: adminUsername, type: string, required: true, defaultValue: admin@run.ai, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' }
+    - { variable: adminPassword, type: password, required: true, defaultValue: "RunAi-Local1!" }
+    # Do not pass production registry credentials as parameters.
+    # Use a pre-existing Secret for production credentials.
+    - { variable: dockerServer, type: string, required: true, defaultValue: https://runai.jfrog.io }
+    - { variable: dockerUsername, type: string, required: true, defaultValue: self-hosted-image-puller-prod }
+    - { variable: runaiRegistryCredentials, type: password, required: true }
+    - { variable: dockerEmail, type: string, required: true, defaultValue: support@run.ai }
+    # TLS. The default issues a self-signed CA and leaf in-cluster and reuses them across upgrades.
+    # Supply a trusted certificate before production use: set `tlsMode: user-provided` plus either
+    # `userTlsSecretName` (preferred) or the inline PEM inputs, then set `customCAEnabled: false`
+    # and `skipTLSVerify: false` if that certificate is publicly trusted.
+    - { variable: tlsMode, type: string, defaultValue: self-signed, validation: '^(self-signed|user-provided)$' }
+    - { variable: userTlsSecretName, type: string }
+    - { variable: userTlsCert, type: multiline }
+    - { variable: userTlsKey, type: password }
+    - { variable: userCaCert, type: multiline }
+    - { variable: customCAEnabled, type: boolean, defaultValue: "true" }
+    - { variable: skipTLSVerify, type: boolean, defaultValue: "true" }
+    # Image for the bootstrap and restful-operation hook Jobs.
+    # Must provide openssl, kubectl, jq, curl and sh; the Jobs fail fast otherwise.
+    # See README "Hook image" to point this at the platform image you already run.
+    - { variable: hookImage, type: string, defaultValue: "docker.io/bitnami/kubectl@sha256:c62a62db80e777acdee87f76bc6f06a95239ad2ff210bf78f585e39e33da98e2" }
+    # Set `gpuDriverEnabled: true` for nodes without NVIDIA drivers.
+    - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false" }
+    - { variable: gpuDevicePluginEnabled, type: boolean, defaultValue: "true" }
+    - { variable: gpuDriverInstallDir, type: string, defaultValue: /run/nvidia/driver }
+
+  tasks:
+
+    - name: registry
+      taskTimeout: 5m
+      app:
+        templateRef: { name: runai-step-01-registry-secret }
+        parameters:
+          registrySecretName: runai-reg-creds
+          dockerServer: "{{ .Values.dockerServer }}"
+          dockerUsername: "{{ .Values.dockerUsername }}"
+          runaiRegistryCredentials: "{{ .Values.runaiRegistryCredentials }}"
+          dockerEmail: "{{ .Values.dockerEmail }}"
+
+
+    - name: ingress
+      taskTimeout: 10m
+      app:
+        templateRef: { name: runai-step-02-ingress-nginx }
+        parameters: { ingressClass: "{{ .Values.ingressClass }}" }
+      outputs:
+        - name: ip
+          fromResource:
+            apiVersion: v1
+            kind: Service
+            namespace: ingress-nginx
+
+            name: "{{ .Values.ingressControllerServiceName }}"
+            jsonPath: "{.status.loadBalancer.ingress[0].ip}"
+
+
+    - name: bootstrap
+      dependsOn: [ingress, registry]
+      taskTimeout: 8m
+      app:
+        templateRef: { name: runai-step-03-bootstrap }
+        parameters:
+          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          loadBalancerAddress: "{{ .tasks.ingress.outputs.ip }}"
+          adminUsername: "{{ .Values.adminUsername }}"
+          adminPassword: "{{ .Values.adminPassword }}"
+          tlsMode: "{{ .Values.tlsMode }}"
+          userTlsSecretName: "{{ .Values.userTlsSecretName }}"
+          userTlsCert: "{{ .Values.userTlsCert }}"
+          userTlsKey: "{{ .Values.userTlsKey }}"
+          userCaCert: "{{ .Values.userCaCert }}"
+          image: "{{ .Values.hookImage }}"
+
+
+    - name: prometheus
+      taskTimeout: 15m
+      app:
+        templateRef: { name: runai-step-04-prometheus-operator }
+
+    # Use GPU nodes for this step.
+    # Configure `nvidia` RuntimeClass and GPU node labels before you apply this stack.
+    - name: gpu
+      dependsOn: [bootstrap, prometheus]
+      taskTimeout: 25m
+      app:
+        templateRef: { name: runai-step-05-gpu-operator }
+        parameters:
+          driverEnabled: "{{ .Values.gpuDriverEnabled }}"
+          devicePluginEnabled: "{{ .Values.gpuDevicePluginEnabled }}"
+          driverInstallDir: "{{ .Values.gpuDriverInstallDir }}"
+
+    - name: ingress-ready
+      dependsOn: [ingress]
+      taskTimeout: 6m
+      app:
+        templateRef: { name: runai-step-02a-ingress-admission-ready }
+        parameters:
+          ingressAdmissionServiceName: "{{ .Values.ingressControllerServiceName }}-admission"
+
+    # Keep task name `backend`. Chart requires release `runai-backend`.
+    - name: backend
+      dependsOn: [registry, bootstrap, ingress-ready]
+      taskTimeout: 30m
+      app:
+        templateRef: { name: runai-step-06-control-plane }
+        parameters:
+          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          ingressClass: "{{ .Values.ingressClass }}"
+          storageClass: "{{ .Values.storageClass }}"
+          customCAEnabled: "{{ .Values.customCAEnabled }}"
+          adminUsername: "{{ .Values.adminUsername }}"
+
+    # Password grant sends credentials in request body.
+    # Use `bodySecret` and `bodySecretFields`. Do not use parameters.
+    - name: authtoken
+      dependsOn: [backend, ingress]
+      taskTimeout: 20m
+      app:
+        templateRef: { name: restful-operation }
+        parameters:
+          namespace: runai-backend
+          baseURL: "https://{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          insecure: "{{ .Values.skipTLSVerify }}"
+          image: "{{ .Values.hookImage }}"
+          createPath: /api/v1/token
+          body: '{"grantType":"password"}'
+          bodySecret: runai-control-plane-admin
+          bodySecretFields: |-
+            username=username
+            password=password
+          outputSecret: runai-auth-token
+          outputs: 'authorization=(.accessToken | select(. != null and . != "") | "Bearer " + .)'
+
+
+    - name: clusterreg
+      dependsOn: [authtoken, ingress]
+      taskTimeout: 15m
+      app:
+        templateRef: { name: restful-operation }
+        parameters:
+          namespace: runai-backend
+          baseURL: "https://{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          insecure: "{{ .Values.skipTLSVerify }}"
+          image: "{{ .Values.hookImage }}"
+          createPath: /api/v1/clusters
+          body: '{"name":"{{ .Values.clusterName }}","domain":"{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"}'
+          # Use `readPath` and `readFilter` to find an existing cluster before POST.
+          readPath: /api/v1/clusters
+          readFilter: '(if type=="array" then . else (.clusters // .items // []) end) | map(select(.name=="{{ .Values.clusterName }}")) | first'
+          credentialsSecret: runai-auth-token
+          outputSecret: runai-cluster-registration
+          outputs: "uid=.uuid"
+          deleteMethod: DELETE
+          deletePath: "/api/v1/clusters/{id}?force=true"
+          deleteIDKey: uid
+      outputs:
+        - name: clusteruid
+          fromSecret: { namespace: runai-backend, name: runai-cluster-registration, key: uid }
+
+
+    - name: clustercreds
+      dependsOn: [clusterreg, ingress]
+      taskTimeout: 15m
+      app:
+        templateRef: { name: restful-operation }
+        parameters:
+          namespace: runai-backend
+          baseURL: "https://{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          insecure: "{{ .Values.skipTLSVerify }}"
+          image: "{{ .Values.hookImage }}"
+          createMethod: GET
+          createPath: "/api/v1/clusters/{{ .tasks.clusterreg.outputs.clusteruid }}/cluster-install-info?version={{ .Values.runaiVersion }}"
+          credentialsSecret: runai-auth-token
+          outputSecret: runai-cluster-creds
+          outputs: "clientsecret=.clientSecret"
+      outputs:
+        - name: clientsecret
+          fromSecret: { namespace: runai-backend, name: runai-cluster-creds, key: clientsecret }
+
+    # Keep task name `cluster`. Chart requires release `runai-cluster`.
+    - name: cluster
+      dependsOn: [clusterreg, clustercreds, gpu, ingress]
+      taskTimeout: 30m
+      app:
+        templateRef: { name: runai-step-10-cluster }
+        parameters:
+          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.tenant }}.{{ .tasks.ingress.outputs.ip }}.nip.io{{ end }}"
+          clusterUID: "{{ .tasks.clusterreg.outputs.clusteruid }}"
+          clientSecret: "{{ .tasks.clustercreds.outputs.clientsecret }}"
+          customCAEnabled: "{{ .Values.customCAEnabled }}"
+          ingressClass: "{{ .Values.ingressClass }}"
+
+  publishedOutputs:
+    - name: ingressIP
+      fromTask: { task: ingress, output: ip }
+    - name: clusterUID
+      fromTask: { task: clusterreg, output: clusteruid }

@@ -1,0 +1,431 @@
+# Create TLS Secrets in post-install hook.
+# Delete TLS Secrets and node labels in pre-delete hook.
+# Self-signed mode persists the CA in `runai-internal-ca` and reuses it across upgrades.
+# Do not remove that Secret from the teardown list; a stale CA outlives the release without it.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-03-bootstrap
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 3] Bootstrap (endpoint + admin + certs + gpu labels)'
+  description: Publishes the control-plane endpoint and admin Secret, issues or accepts a TLS pair, and labels nodes for simulated GPUs.
+  defaultNamespace: runai
+  config:
+    manifests: |-
+
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: runai-control-plane-endpoint
+        namespace: runai
+      data:
+        fqdn: "{{ .Values.fqdn }}"
+        loadBalancerAddress: "{{ .Values.loadBalancerAddress }}"
+      ---
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: runai-control-plane-admin
+        namespace: runai-backend
+      type: Opaque
+      stringData:
+        username: "{{ .Values.adminUsername }}"
+        password: "{{ .Values.adminPassword }}"
+      ---
+      {{- if and (eq (.Values.tlsMode | default "self-signed") "user-provided") (not .Values.userTlsSecretName) }}
+
+      # Inline PEM input. Prefer `userTlsSecretName` and a pre-existing Secret where the
+      # tenant cluster exists before the Stack runs.
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: runai-bootstrap-user-tls
+        namespace: runai
+      type: Opaque
+      stringData:
+        tls.crt: |
+      {{ .Values.userTlsCert | default "" | indent 4 }}
+        tls.key: |
+      {{ .Values.userTlsKey | default "" | indent 4 }}
+      {{- if .Values.userCaCert }}
+        ca.crt: |
+      {{ .Values.userCaCert | indent 4 }}
+      {{- end }}
+      ---
+      {{- end }}
+
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: runai-bootstrap
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      ---
+      # Node labelling is the only cluster-scoped need; Secret access is namespaced below.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: runai-bootstrap
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: runai-bootstrap
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: runai-bootstrap
+          namespace: runai
+      roleRef:
+        kind: ClusterRole
+        name: runai-bootstrap
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      {{- range $ns := list "runai" "runai-backend" }}
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: runai-bootstrap
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get", "list", "create", "update", "patch", "delete"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: runai-bootstrap
+        namespace: {{ $ns }}
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: runai-bootstrap
+          namespace: runai
+      roleRef:
+        kind: Role
+        name: runai-bootstrap
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      {{- end }}
+
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-bootstrap-certs
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            serviceAccountName: runai-bootstrap
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: bootstrap
+                image: {{ .Values.image | default "docker.io/bitnami/kubectl@sha256:c62a62db80e777acdee87f76bc6f06a95239ad2ff210bf78f585e39e33da98e2" | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  # kubectl writes a discovery cache under $HOME; the root filesystem is read-only.
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "runai-bootstrap.certs" . | indent 14 }}
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+      {{- if eq (.Values.tlsMode | default "self-signed") "user-provided" }}
+                  - name: user-tls
+                    mountPath: /var/run/runai-bootstrap/user-tls
+                    readOnly: true
+      {{- end }}
+            volumes:
+              - name: tmp
+                emptyDir: {}
+      {{- if eq (.Values.tlsMode | default "self-signed") "user-provided" }}
+              - name: user-tls
+                secret:
+                  secretName: {{ .Values.userTlsSecretName | default "runai-bootstrap-user-tls" | quote }}
+      {{- end }}
+      ---
+
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-bootstrap-teardown
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-delete
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            serviceAccountName: runai-bootstrap
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: teardown
+                image: {{ .Values.image | default "docker.io/bitnami/kubectl@sha256:c62a62db80e777acdee87f76bc6f06a95239ad2ff210bf78f585e39e33da98e2" | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -u
+                    command -v kubectl >/dev/null || { echo "missing kubectl; set the App 'image' parameter to an image that provides it" >&2; exit 1; }
+                    # Teardown must never block an uninstall, so nothing here is fatal.
+                    kubectl -n runai-backend delete secret runai-backend-tls runai-ca-cert runai-internal-ca --ignore-not-found || true
+                    kubectl -n runai delete secret runai-ca-cert --ignore-not-found || true
+                    kubectl label node --all run.ai/simulated-gpu-node-pool- || true
+                    exit 0
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
+
+      {{- define "runai-bootstrap.certs" -}}
+      set -eu
+
+      for t in openssl kubectl jq; do
+        command -v "$t" >/dev/null || { echo "missing $t; set the App 'image' parameter to an image that provides it" >&2; exit 1; }
+      done
+
+      FQDN="{{ .Values.fqdn }}"
+      TLS_MODE="{{ .Values.tlsMode | default "self-signed" }}"
+      USER_TLS_DIR=/var/run/runai-bootstrap/user-tls
+      # Reissue a leaf that expires inside this window rather than letting it lapse between upgrades.
+      RENEW_BEFORE_SECONDS=2592000
+
+      d="$(mktemp -d)"
+
+      # Server-side apply keeps cert material out of a last-applied-configuration annotation.
+      apply_stdin() {
+        kubectl apply --server-side --force-conflicts --field-manager=runai-bootstrap -f -
+      }
+
+      # Write one Secret key to a file. Returns non-zero when the Secret or key is absent.
+      read_secret_key() {
+        ns="$1"; name="$2"; key="$3"; out="$4"
+        kubectl -n "$ns" get secret "$name" -o json 2>/dev/null \
+          | jq -r --arg k "$key" '.data[$k] // empty' \
+          | base64 -d > "$out" 2>/dev/null || return 1
+        [ -s "$out" ] || return 1
+      }
+
+      if [ "$TLS_MODE" = "user-provided" ]; then
+        for f in tls.crt tls.key; do
+          [ -s "$USER_TLS_DIR/$f" ] || {
+            echo "tlsMode=user-provided but '$f' is missing or empty; set userTlsCert/userTlsKey or point userTlsSecretName at a Secret holding tls.crt and tls.key" >&2
+            exit 1
+          }
+        done
+        cp "$USER_TLS_DIR/tls.crt" "$d/tls.crt"
+        cp "$USER_TLS_DIR/tls.key" "$d/tls.key"
+        if [ -s "$USER_TLS_DIR/ca.crt" ]; then
+          cp "$USER_TLS_DIR/ca.crt" "$d/ca.crt"
+          echo "[bootstrap] using supplied certificate and CA"
+        else
+          echo "[bootstrap] using supplied certificate; no CA supplied, skipping runai-ca-cert"
+        fi
+      else
+        # Reuse the persisted CA so an upgrade does not rotate trust out from under running pods.
+        if read_secret_key runai-backend runai-internal-ca ca.crt "$d/ca.crt" \
+          && read_secret_key runai-backend runai-internal-ca ca.key "$d/ca.key"; then
+          CA_REUSED=yes
+          echo "[bootstrap] reusing stored CA"
+        else
+          CA_REUSED=no
+          echo "[bootstrap] generating CA"
+          openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+            -keyout "$d/ca.key" -out "$d/ca.crt" \
+            -subj "/CN=runai local CA" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+        fi
+
+        # A freshly generated CA cannot have signed the stored leaf, so only consider reuse
+        # when the CA came back from the Secret.
+        REUSE_LEAF=no
+        if [ "$CA_REUSED" = yes ] \
+          && read_secret_key runai-backend runai-backend-tls tls.crt "$d/existing.crt" \
+          && read_secret_key runai-backend runai-backend-tls tls.key "$d/tls.key" \
+          && openssl x509 -in "$d/existing.crt" -noout -ext subjectAltName 2>/dev/null | grep -qF "DNS:$FQDN" \
+          && openssl x509 -in "$d/existing.crt" -noout -checkend "$RENEW_BEFORE_SECONDS" >/dev/null 2>&1; then
+          REUSE_LEAF=yes
+        fi
+
+        if [ "$REUSE_LEAF" = yes ]; then
+          echo "[bootstrap] existing certificate covers $FQDN and is not near expiry; reusing"
+          mv "$d/existing.crt" "$d/tls.crt"
+        else
+          echo "[bootstrap] issuing cert for $FQDN"
+          # X.509 commonName is capped at 64 bytes, and a load balancer hostname can exceed it
+          # (an AWS NLB name is around 77 characters), which makes `openssl req` fail outright.
+          # Clients validate the SANs below, not the subject, so shorten the CN instead.
+          CN="$FQDN"
+          if [ "${#CN}" -gt 64 ]; then
+            CN="runai control plane"
+            echo "[bootstrap] $FQDN exceeds the 64-byte commonName limit; using CN=$CN"
+          fi
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$d/tls.key" -out "$d/tls.csr" \
+            -subj "/CN=$CN" \
+            -addext "subjectAltName=DNS:$FQDN,DNS:*.$FQDN" \
+            -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
+          openssl x509 -req -in "$d/tls.csr" \
+            -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial \
+            -days 825 -copy_extensions copy -out "$d/tls.crt" >/dev/null 2>&1
+          cat "$d/ca.crt" >> "$d/tls.crt"
+        fi
+      fi
+
+      kubectl -n runai-backend create secret tls runai-backend-tls \
+        --cert="$d/tls.crt" --key="$d/tls.key" \
+        --dry-run=client -o yaml | apply_stdin
+
+      if [ -s "$d/ca.crt" ]; then
+        for ns in runai-backend runai; do
+          kubectl -n "$ns" create secret generic runai-ca-cert \
+            --from-file=runai-ca.pem="$d/ca.crt" \
+            --dry-run=client -o yaml | apply_stdin
+        done
+      fi
+
+      if [ "$TLS_MODE" != "user-provided" ]; then
+        kubectl -n runai-backend create secret generic runai-internal-ca \
+          --from-file=ca.crt="$d/ca.crt" --from-file=ca.key="$d/ca.key" \
+          --dry-run=client -o yaml | apply_stdin
+      fi
+
+      # Only the simulated-GPU path needs this label, and the previous implementation ignored
+      # failures here. Keep it non-fatal so labelling cannot break a real-GPU install.
+      kubectl label node --all --overwrite run.ai/simulated-gpu-node-pool=default \
+        || echo "warning: could not label nodes for simulated GPUs" >&2
+
+      echo "[bootstrap] certs done"
+      {{- end -}}
+  parameters:
+    - variable: fqdn
+      label: Control-plane FQDN
+      description: Fully qualified domain the control plane is served on; the self-signed cert is issued for it and for `*.<fqdn>`.
+      type: string
+      required: true
+    - variable: loadBalancerAddress
+      label: Ingress LoadBalancer address
+      description: External address of the ingress LoadBalancer, published in the endpoint ConfigMap.
+      type: string
+      required: true
+    - variable: adminUsername
+      label: Control-plane admin username
+      type: string
+      required: true
+      defaultValue: admin@run.ai
+      validation: ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$
+    - variable: adminPassword
+      label: Control-plane admin password
+      type: password
+      required: true
+    - variable: tlsMode
+      label: TLS mode
+      description: >-
+        `self-signed` issues a CA and leaf in-cluster and reuses them across upgrades.
+        `user-provided` consumes a certificate you supply and never runs openssl.
+      type: string
+      defaultValue: self-signed
+      validation: ^(self-signed|user-provided)$
+    - variable: userTlsSecretName
+      label: Existing TLS Secret name
+      description: >-
+        Name of a Secret in the `runai` namespace holding `tls.crt`, `tls.key` and optionally `ca.crt`.
+        Used when tlsMode is `user-provided`; takes precedence over the inline PEM parameters.
+        Prefer this over inline PEMs wherever the tenant cluster exists before the Stack runs.
+      type: string
+    - variable: userTlsCert
+      label: TLS certificate (PEM)
+      description: PEM chain (leaf first). Used when tlsMode is `user-provided` and no Secret name is given.
+      type: multiline
+    - variable: userTlsKey
+      label: TLS private key (PEM)
+      description: PEM private key matching the supplied certificate.
+      type: password
+    - variable: userCaCert
+      label: CA certificate (PEM)
+      description: >-
+        CA to publish as `runai-ca.pem` so cluster components trust the control plane.
+        Leave empty when the supplied chain is already publicly trusted, and set customCAEnabled to false.
+      type: multiline
+    - variable: image
+      label: Hook image
+      description: Image for the bootstrap and teardown Jobs. Must provide openssl, kubectl and jq.
+      type: string
+      defaultValue: docker.io/bitnami/kubectl@sha256:c62a62db80e777acdee87f76bc6f06a95239ad2ff210bf78f585e39e33da98e2

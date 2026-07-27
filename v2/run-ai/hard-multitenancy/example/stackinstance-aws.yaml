@@ -1,0 +1,48 @@
+# AWS/EKS example. Use StackInstance name `runai`.
+# Charts require releases `runai-backend` and `runai-cluster`.
+# Apply this file or `stackinstance-from-template.yaml`. Do not apply both files.
+#
+# Prerequisites on the destination cluster (see README section "AWS / EKS"):
+#   - AWS Load Balancer Controller, for the NLB annotations the AWS ingress step sets.
+#   - A default StorageClass on the EBS CSI driver. `gp2` as shipped by EKS does not work.
+apiVersion: storage.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: runai
+spec:
+  displayName: "run:ai self-hosted on AWS (full infra, NLB)"
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: runai-selfhosted-aws
+  # Set `runaiRegistryCredentials` before you apply this stack.
+  inputs:
+    # runaiRegistryCredentials: "<JFROG_TOKEN>"
+    storageClass: gp3
+    clusterName: runai
+    # There is no `tenant` input: the FQDN is the ingress NLB's hostname, not a nip.io label.
+    # Set `domain` instead when you have a Route53 record pointing at that load balancer.
+    # domain: runai.demo.example.com
+    #
+    # Defaults for EKS accelerated AMIs, repeated here so they are visible:
+    # the AMI ships the driver and the container toolkit, and eksctl installs the device plugin.
+    gpuDriverEnabled: "false"
+    gpuDevicePluginEnabled: "false"
+    gpuToolkitEnabled: "false"
+    gpuCdiEnabled: "false"
+    # TLS defaults to a self-signed certificate. See README section "TLS".
+    # A load balancer hostname cannot get a publicly trusted certificate, so set `domain` first
+    # if you want one:
+    # tlsMode: user-provided
+    # userTlsCert: |
+    #   -----BEGIN CERTIFICATE-----
+    #   ...
+    # userTlsKey: |
+    #   -----BEGIN PRIVATE KEY-----
+    #   ...
+    # Set both of these only when that chain is publicly trusted:
+    # customCAEnabled: "false"
+    # skipTLSVerify: "false"
