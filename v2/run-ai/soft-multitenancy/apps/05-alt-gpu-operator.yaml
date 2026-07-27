@@ -1,0 +1,73 @@
+# Use this App or `runai-step-05-fake-gpu-operator`. Do not use both steps.
+# Use GPU nodes for this App.
+# Keep chart version here. Chart fields do not use Go templates.
+# Configure `nvidia` RuntimeClass and GPU node labels before you apply this App.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-05-gpu-operator
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 5 alt] NVIDIA GPU Operator'
+  description: Real NVIDIA GPU Operator (driver, container toolkit, device plugin, DCGM). Alternative to the fake GPU operator; requires actual GPU nodes.
+  defaultNamespace: gpu-operator
+  wait: true
+  timeout: 20m
+  config:
+    chart:
+      name: gpu-operator
+      repoURL: https://helm.ngc.nvidia.com/nvidia
+      version: v25.10.1
+    values: |-
+      driver:
+        enabled: {{ .Values.driverEnabled }}
+      hostPaths:
+        driverInstallDir: "{{ .Values.driverInstallDir }}"
+      toolkit:
+        enabled: true
+        installDir: "{{ .Values.driverInstallDir }}"
+      cdi:
+        enabled: true
+        default: true
+      devicePlugin:
+        enabled: {{ .Values.devicePluginEnabled }}
+      dcgm:
+        enabled: true
+      dcgmExporter:
+        enabled: true
+      migManager:
+        enabled: false
+      nodeStatusExporter:
+        enabled: true
+      nfd:
+        enabled: true
+      gfd:
+        enabled: true
+      operator:
+        defaultRuntime: containerd
+  parameters:
+    - variable: driverEnabled
+      label: Install the NVIDIA driver
+      description: >-
+        Let the operator install and manage the NVIDIA driver. Leave false when the node
+        image already ships drivers (DOKS GPU pools, GKE with Google-managed drivers, most
+        cloud GPU AMIs); set true on bare nodes. Mirrors gpu_operator_driver_enabled in the
+        certified stacks, whose soft-multitenancy default is also false.
+      type: boolean
+      defaultValue: "false"
+    - variable: devicePluginEnabled
+      label: Enable the device plugin
+      description: >-
+        Enable the operator's own device plugin. Set false when the host already provides
+        one (e.g. GKE). Mirrors gpu_operator_device_plugin_enabled.
+      type: boolean
+      defaultValue: "true"
+    - variable: driverInstallDir
+      label: Driver install directory
+      description: >-
+        Host path where the NVIDIA drivers live; also the container toolkit's install dir.
+        On GKE with Google-managed drivers use /home/kubernetes/bin/nvidia. Mirrors
+        gpu_operator_driver_install_dir.
+      type: string
+      defaultValue: /run/nvidia/driver

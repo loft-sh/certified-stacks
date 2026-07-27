@@ -1,0 +1,22 @@
+# Use StackInstance name `runai`.
+# Charts require releases `runai-backend` and `runai-cluster`.
+# Apply this file or `stackinstance.yaml`. Do not apply both files.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: runai
+spec:
+  displayName: "run:ai self-hosted (full infra, nip.io)"
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: runai-selfhosted-nipio
+  # Set `dockerPassword` and `storageClass` before you apply this stack.
+  inputs:
+    tenant: runai
+    # dockerPassword: "<JFROG_TOKEN>"
+    # storageClass: "<STORAGE_CLASS>"
+    clusterName: runai

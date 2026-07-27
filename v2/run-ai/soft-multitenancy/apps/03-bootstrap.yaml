@@ -1,0 +1,191 @@
+# Create TLS Secrets in post-install hook.
+# Delete TLS Secrets and node labels in pre-delete hook.
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-03-bootstrap
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[Run:AI Step - 3] Bootstrap (endpoint + admin + certs + gpu labels)'
+  description: Publishes the control-plane endpoint and admin Secret, issues a self-signed CA/TLS pair, and labels nodes for simulated GPUs.
+  defaultNamespace: runai
+  config:
+    manifests: |-
+
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: runai-control-plane-endpoint
+        namespace: runai
+      data:
+        fqdn: "{{ .Values.fqdn }}"
+        loadBalancerAddress: "{{ .Values.loadBalancerAddress }}"
+      ---
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: runai-control-plane-admin
+        namespace: runai-backend
+      type: Opaque
+      stringData:
+        username: "{{ .Values.adminUsername }}"
+        password: "{{ .Values.adminPassword }}"
+      ---
+
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: runai-bootstrap
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: runai-bootstrap
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get", "create", "patch", "update", "delete"]
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: runai-bootstrap
+        annotations:
+          "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: runai-bootstrap
+          namespace: runai
+      roleRef:
+        kind: ClusterRole
+        name: runai-bootstrap
+        apiGroup: rbac.authorization.k8s.io
+      ---
+
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-bootstrap-certs
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            serviceAccountName: runai-bootstrap
+            restartPolicy: Never
+            containers:
+              - name: bootstrap
+                image: alpine:3.20
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    apk add --no-cache openssl curl jq >/dev/null 2>&1 || true
+                    for t in openssl curl jq; do command -v "$t" >/dev/null || { echo "missing $t; use a prebaked image" >&2; exit 1; }; done
+                    API="https://kubernetes.default.svc"
+                    SA=/var/run/secrets/kubernetes.io/serviceaccount
+                    TOKEN="$(cat "$SA/token")"; CACERT="$SA/ca.crt"
+                    FQDN="{{ .Values.fqdn }}"
+                    echo "[bootstrap] issuing cert for $FQDN"
+                    d=$(mktemp -d)
+                    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$d/ca.key" -out "$d/ca.crt" -subj "/CN=runai local CA" >/dev/null 2>&1
+                    openssl req -newkey rsa:2048 -nodes -keyout "$d/tls.key" -out "$d/tls.csr" -subj "/CN=$FQDN" -addext "subjectAltName=DNS:$FQDN,DNS:*.$FQDN" >/dev/null 2>&1
+                    openssl x509 -req -in "$d/tls.csr" -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial -days 825 -copy_extensions copy -out "$d/tls.crt" >/dev/null 2>&1
+                    cat "$d/ca.crt" >> "$d/tls.crt"
+                    TLS_CRT=$(base64 < "$d/tls.crt" | tr -d '\n')
+                    TLS_KEY=$(base64 < "$d/tls.key" | tr -d '\n')
+                    CA_PEM=$(base64 < "$d/ca.crt" | tr -d '\n')
+                    apply_secret() {
+                      ns="$1"; name="$2"; stype="$3"; data="$4"
+                      body="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"$name\",\"namespace\":\"$ns\"},\"type\":\"$stype\",\"data\":$data}"
+                      code=$(curl -sS -o /tmp/resp -w '%{http_code}' --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -X POST "$API/api/v1/namespaces/$ns/secrets" --data "$body")
+                      if [ "$code" = "409" ]; then
+                        code=$(curl -sS -o /tmp/resp -w '%{http_code}' --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/merge-patch+json' -X PATCH "$API/api/v1/namespaces/$ns/secrets/$name" --data "{\"data\":$data}")
+                      fi
+                      [ "$code" -lt 300 ] || { echo "secret $ns/$name failed: HTTP $code $(cat /tmp/resp)" >&2; exit 1; }
+                      echo "secret $ns/$name ok ($code)"
+                    }
+                    apply_secret runai-backend runai-backend-tls kubernetes.io/tls "{\"tls.crt\":\"$TLS_CRT\",\"tls.key\":\"$TLS_KEY\"}"
+                    apply_secret runai-backend runai-ca-cert Opaque "{\"runai-ca.pem\":\"$CA_PEM\"}"
+                    apply_secret runai runai-ca-cert Opaque "{\"runai-ca.pem\":\"$CA_PEM\"}"
+                    curl -sS --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" "$API/api/v1/nodes" | jq -r '.items[].metadata.name' | while read -r n; do
+                      curl -sS -o /dev/null --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/merge-patch+json' -X PATCH "$API/api/v1/nodes/$n" --data '{"metadata":{"labels":{"run.ai/simulated-gpu-node-pool":"default"}}}'
+                      echo "labeled node $n"
+                    done
+                    echo "[bootstrap] certs done"
+      ---
+
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-bootstrap-teardown
+        namespace: runai
+        annotations:
+          "helm.sh/hook": pre-delete
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            serviceAccountName: runai-bootstrap
+            restartPolicy: Never
+            containers:
+              - name: teardown
+                image: alpine:3.20
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    apk add --no-cache curl jq >/dev/null 2>&1 || true
+                    API="https://kubernetes.default.svc"
+                    SA=/var/run/secrets/kubernetes.io/serviceaccount
+                    TOKEN="$(cat "$SA/token")"; CACERT="$SA/ca.crt"
+                    del() { curl -sS -o /dev/null --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" -X DELETE "$API$1" || true; echo "deleted $1"; }
+                    del /api/v1/namespaces/runai-backend/secrets/runai-backend-tls
+                    del /api/v1/namespaces/runai-backend/secrets/runai-ca-cert
+                    del /api/v1/namespaces/runai/secrets/runai-ca-cert
+                    curl -sS --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" "$API/api/v1/nodes" | jq -r '.items[].metadata.name' | while read -r n; do
+                      curl -sS -o /dev/null --cacert "$CACERT" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json-patch+json' -X PATCH "$API/api/v1/nodes/$n" --data '[{"op":"remove","path":"/metadata/labels/run.ai~1simulated-gpu-node-pool"}]' || true
+                    done
+                    exit 0
+  parameters:
+    - variable: fqdn
+      label: Control-plane FQDN
+      description: Fully qualified domain the control plane is served on; the self-signed cert is issued for it and *.it.
+      type: string
+      required: true
+    - variable: loadBalancerAddress
+      label: Ingress LoadBalancer address
+      description: External address of the ingress LoadBalancer, published in the endpoint ConfigMap.
+      type: string
+      required: true
+    - variable: adminUsername
+      label: Control-plane admin username
+      type: string
+      required: true
+      defaultValue: admin@run.ai
+      validation: ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$
+    - variable: adminPassword
+      label: Control-plane admin password
+      type: password
+      required: true
