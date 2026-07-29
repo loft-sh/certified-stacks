@@ -1,0 +1,31 @@
+# Alternative to runai-fake-gpu in 10-management-manifests.yaml.
+# Apply this OR fake GPU profile, never both.
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-real-gpu
+spec:
+  tier: 40
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  helmCharts:
+    - repositoryURL: https://helm.ngc.nvidia.com/nvidia
+      repositoryName: nvidia
+      chartName: gpu-operator
+      chartVersion: v25.10.1
+      releaseName: runai-gpu-operator
+      releaseNamespace: gpu-operator
+      helmChartAction: Install
+      values: |
+        driver: {enabled: false}
+        hostPaths: {driverInstallDir: /run/nvidia/driver}
+        toolkit: {enabled: true, installDir: /run/nvidia/driver}
+        cdi: {enabled: true, default: true}
+        devicePlugin: {enabled: true}
+        dcgm: {enabled: true}
+        dcgmExporter: {enabled: true}
+        migManager: {enabled: false}
+        nodeStatusExporter: {enabled: true}
+        nfd: {enabled: true}
+        gfd: {enabled: true}
+        operator: {defaultRuntime: containerd}

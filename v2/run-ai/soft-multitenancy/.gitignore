@@ -1,0 +1,5 @@
+# Compiler output.
+out/
+
+# Agent scratch.
+.pi-subagents/

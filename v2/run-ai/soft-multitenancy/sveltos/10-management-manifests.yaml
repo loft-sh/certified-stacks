@@ -1,0 +1,324 @@
+# Apply this file to management cluster after Sveltos installation.
+# Label each target Cluster object: stacks.loft.sh/runai=true
+# This file contains no credential payload.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runai-sveltos-foundation
+  namespace: projectsveltos
+data:
+  resources.yaml: |
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: runai-sveltos-workflow
+      namespace: runai
+    ---
+    # POC only: Helm installs a vendor chart with a broad, evolving resource
+    # graph. A partial role fails later on an unlisted chart resource. Use an
+    # isolated TargetCluster and remove this binding during teardown.
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: runai-sveltos-workflow
+    subjects:
+      - kind: ServiceAccount
+        name: runai-sveltos-workflow
+        namespace: runai
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: cluster-admin
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runai-sveltos-bootstrap
+  namespace: projectsveltos
+data:
+  resources.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: runai-bootstrap
+      namespace: runai
+      labels: {runai.sveltos.io/poc: "true"}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: {runai.sveltos.io/poc: "true"}
+        spec:
+          serviceAccountName: runai-sveltos-workflow
+          restartPolicy: Never
+          containers:
+            - name: bootstrap
+              image: alpine:3.20
+              command: ["sh", "-ec"]
+              volumeMounts:
+                - {name: config, mountPath: /run/config, readOnly: true}
+                - {name: inputs, mountPath: /run/inputs, readOnly: true}
+              args:
+                - |
+                  apk add --no-cache curl jq openssl
+                  api=https://kubernetes.default.svc
+                  token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  auth="Authorization: Bearer $token"
+                  get() { curl -fsS --cacert "$ca" -H "$auth" "$api$1"; }
+                  apply() {
+                    path="$1" body="$2"
+                    code=$(curl -sS -o /tmp/response -w '%{http_code}' --cacert "$ca" -H "$auth" -H 'Content-Type: application/json' -X POST "$api$path" --data "$body")
+                    if [ "$code" = 409 ]; then
+                      name=$(printf '%s' "$body" | jq -r .metadata.name)
+                      code=$(curl -sS -o /tmp/response -w '%{http_code}' --cacert "$ca" -H "$auth" -H 'Content-Type: application/merge-patch+json' -X PATCH "$api$path/$name" --data "$body")
+                    fi
+                    test "$code" -lt 300 || { cat /tmp/response >&2; exit 1; }
+                  }
+                  tenant=$(cat /run/config/tenant)
+                  until ip=$(get /api/v1/namespaces/ingress-nginx/services/runai-ingress-ingress-nginx-controller | jq -r '.status.loadBalancer.ingress[0].ip // empty') && test -n "$ip"; do sleep 10; done
+                  fqdn="$tenant.$ip.nip.io"
+                  d=$(mktemp -d)
+                  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$d/ca.key" -out "$d/ca.crt" -subj '/CN=runai POC CA' >/dev/null 2>&1
+                  openssl req -newkey rsa:2048 -nodes -keyout "$d/tls.key" -out "$d/tls.csr" -subj "/CN=$fqdn" -addext "subjectAltName=DNS:$fqdn" >/dev/null 2>&1
+                  openssl x509 -req -in "$d/tls.csr" -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial -days 825 -copy_extensions copy -out "$d/tls.crt" >/dev/null 2>&1
+                  crt=$(base64 < "$d/tls.crt" | tr -d '\n'); key=$(base64 < "$d/tls.key" | tr -d '\n'); capem=$(base64 < "$d/ca.crt" | tr -d '\n')
+                  endpoint=$(jq -nc --arg f "$fqdn" --arg ip "$ip" '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"runai-endpoint",namespace:"runai"},data:{fqdn:$f,loadBalancerAddress:$ip}}')
+                  tls=$(jq -nc --arg c "$crt" --arg k "$key" '{apiVersion:"v1",kind:"Secret",metadata:{name:"runai-backend-tls",namespace:"runai-backend"},type:"kubernetes.io/tls",data:{"tls.crt":$c,"tls.key":$k}}')
+                  cacert=$(jq -nc --arg c "$capem" '{apiVersion:"v1",kind:"Secret",metadata:{name:"runai-ca-cert",namespace:"runai-backend"},type:"Opaque",data:{"runai-ca.pem":$c}}')
+                  admin=$(jq -nc --rawfile u /run/inputs/admin-username --rawfile p /run/inputs/admin-password '{apiVersion:"v1",kind:"Secret",metadata:{name:"runai-control-plane-admin",namespace:"runai-backend"},type:"Opaque",stringData:{username:($u|rtrimstr("\n")),password:($p|rtrimstr("\n"))}}')
+                  apply /api/v1/namespaces/runai/configmaps "$endpoint"
+                  apply /api/v1/namespaces/runai-backend/secrets "$tls"
+                  apply /api/v1/namespaces/runai-backend/secrets "$cacert"
+                  apply /api/v1/namespaces/runai-backend/secrets "$admin"
+                  if test "$(cat /run/config/gpuMode)" = fake; then
+                    for node in $(get /api/v1/nodes | jq -r '.items[].metadata.name'); do
+                      code=$(curl -sS -o /tmp/response -w '%{http_code}' --cacert "$ca" -H "$auth" -H 'Content-Type: application/merge-patch+json' -X PATCH "$api/api/v1/nodes/$node" --data '{"metadata":{"labels":{"run.ai/simulated-gpu-node-pool":"default"}}}')
+                      test "$code" -lt 300 || { cat /tmp/response >&2; exit 1; }
+                    done
+                  fi
+                  echo "bootstrap complete for $fqdn"
+          volumes:
+            - name: config
+              configMap: {name: runai-poc-config}
+            - name: inputs
+              secret: {secretName: runai-poc-inputs}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runai-sveltos-backend
+  namespace: projectsveltos
+data:
+  resources.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: runai-backend-installer
+      namespace: runai
+      labels: {runai.sveltos.io/poc: "true"}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: {runai.sveltos.io/poc: "true"}
+        spec:
+          serviceAccountName: runai-sveltos-workflow
+          restartPolicy: Never
+          containers:
+            - name: helm
+              image: alpine/helm:3.16.4
+              command: ["sh", "-ec"]
+              volumeMounts:
+                - {name: config, mountPath: /run/config, readOnly: true}
+              args:
+                - |
+                  apk add --no-cache curl jq
+                  api=https://kubernetes.default.svc; token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  until endpoint=$(curl -fsS --cacert "$ca" -H "Authorization: Bearer $token" "$api/api/v1/namespaces/runai/configmaps/runai-endpoint" | jq -r .data.fqdn) && test -n "$endpoint"; do sleep 10; done
+                  helm repo add runai https://runai.jfrog.io/artifactory/cp-charts-prod
+                  helm upgrade --install runai-backend runai/control-plane --version "$(cat /run/config/runaiVersion)" --namespace runai-backend --create-namespace --wait --timeout 30m \
+                    --set global.domain="$endpoint" \
+                    --set global.customCA.enabled=true \
+                    --set global.ingress.ingressClass="$(cat /run/config/ingressClass)" \
+                    --set global.storageClass="$(cat /run/config/storageClass)" \
+                    --set tenantsManager.config.adminUsername=admin@run.ai \
+                    --set tenantsManager.config.existingSecret=runai-control-plane-admin \
+                    --set tenantsManager.config.secretKeys.adminPasswordKey=password \
+                    --set global.imagePullSecrets[0].name=runai-reg-creds
+          volumes:
+            - name: config
+              configMap: {name: runai-poc-config}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runai-sveltos-cluster
+  namespace: projectsveltos
+data:
+  resources.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: runai-cluster-installer
+      namespace: runai
+      labels: {runai.sveltos.io/poc: "true"}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: {runai.sveltos.io/poc: "true"}
+        spec:
+          serviceAccountName: runai-sveltos-workflow
+          restartPolicy: Never
+          containers:
+            - name: helm
+              image: alpine/helm:3.16.4
+              command: ["sh", "-ec"]
+              volumeMounts:
+                - {name: config, mountPath: /run/config, readOnly: true}
+                - {name: inputs, mountPath: /run/inputs, readOnly: true}
+              args:
+                - |
+                  apk add --no-cache curl jq
+                  api=https://kubernetes.default.svc; token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  until fqdn=$(curl -fsS --cacert "$ca" -H "Authorization: Bearer $token" "$api/api/v1/namespaces/runai/configmaps/runai-endpoint" | jq -r .data.fqdn) && test -n "$fqdn"; do sleep 10; done
+                  base="https://$fqdn"; token_body=$(jq -nc --rawfile u /run/inputs/admin-username --rawfile p /run/inputs/admin-password '{grantType:"password",username:($u|rtrimstr("\n")),password:($p|rtrimstr("\n"))}')
+                  until auth=$(curl -kfsS -X POST "$base/api/v1/token" -H 'Content-Type: application/json' --data "$token_body" | jq -r '.accessToken // empty | "Bearer " + .') && test -n "$auth"; do sleep 15; done
+                  uid=$(curl -kfsS -H "Authorization: $auth" "$base/api/v1/clusters" | jq -r --arg n "$(cat /run/config/clusterName)" '(.items // .clusters // .)[] | select(.name==$n) | (.uuid // .uid // .id)' | head -1)
+                  if test -z "$uid"; then uid=$(curl -kfsS -X POST "$base/api/v1/clusters" -H "Authorization: $auth" -H 'Content-Type: application/json' --data "$(jq -nc --arg n "$(cat /run/config/clusterName)" --arg d "$fqdn" '{name:$n,domain:$d}')" | jq -r '.uuid // .uid // .id'); fi
+                  clientsecret=$(curl -kfsS -H "Authorization: $auth" "$base/api/v1/clusters/$uid/cluster-install-info?version=$(cat /run/config/runaiVersion)" | jq -r .clientSecret)
+                  test -n "$uid" && test -n "$clientsecret"
+                  body=$(jq -nc --arg s "$clientsecret" '{apiVersion:"v1",kind:"Secret",metadata:{name:"runai-cluster-creds",namespace:"runai"},type:"Opaque",stringData:{clientsecret:$s}}')
+                  curl -fsS --cacert "$ca" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -X POST "$api/api/v1/namespaces/runai/secrets" --data "$body" || curl -fsS --cacert "$ca" -H "Authorization: Bearer $token" -H 'Content-Type: application/merge-patch+json' -X PATCH "$api/api/v1/namespaces/runai/secrets/runai-cluster-creds" --data "$body"
+                  helm repo add runai https://runai.jfrog.io/artifactory/api/helm/run-ai-charts
+                  helm upgrade --install runai-cluster runai/runai-cluster --version "$(cat /run/config/runaiVersion)" --namespace runai --wait --timeout 30m \
+                    --set controlPlane.url="$fqdn" --set controlPlane.existingSecret=runai-cluster-creds --set controlPlane.secretKeys.clientSecret=clientsecret \
+                    --set cluster.uid="$uid" --set cluster.url="$fqdn" --set global.customCA.enabled=true \
+                    --set clusterConfig.global.ingress.ingressClass="$(cat /run/config/ingressClass)" \
+                    --set global.imagePullSecrets[0].name=runai-reg-creds
+          volumes:
+            - name: config
+              configMap: {name: runai-poc-config}
+            - name: inputs
+              secret: {secretName: runai-poc-inputs}
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-foundation
+spec:
+  tier: 10
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  policyRefs:
+    - kind: ConfigMap
+      namespace: projectsveltos
+      name: runai-sveltos-foundation
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-ingress
+spec:
+  tier: 20
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  helmCharts:
+    - repositoryURL: https://kubernetes.github.io/ingress-nginx
+      repositoryName: ingress-nginx
+      chartName: ingress-nginx
+      chartVersion: 4.15.1
+      releaseName: runai-ingress
+      releaseNamespace: ingress-nginx
+      helmChartAction: Install
+      values: |
+        controller:
+          kind: DaemonSet
+          hostPort: {enabled: true}
+          service: {type: LoadBalancer}
+          ingressClass: nginx
+          ingressClassResource: {name: nginx}
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-bootstrap
+spec:
+  tier: 30
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  policyRefs:
+    - kind: ConfigMap
+      namespace: projectsveltos
+      name: runai-sveltos-bootstrap
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-prometheus
+spec:
+  tier: 30
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  helmCharts:
+    - repositoryURL: https://prometheus-community.github.io/helm-charts
+      repositoryName: prometheus-community
+      chartName: kube-prometheus-stack
+      chartVersion: 87.17.0
+      releaseName: runai-prometheus
+      releaseNamespace: monitoring
+      helmChartAction: Install
+      values: |
+        grafana: {enabled: false}
+        alertmanager: {enabled: false}
+        prometheus: {enabled: false}
+        nodeExporter: {enabled: false}
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-fake-gpu
+spec:
+  tier: 40
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  helmCharts:
+    - repositoryURL: oci://ghcr.io/run-ai/fake-gpu-operator
+      repositoryName: fake-gpu-operator
+      chartName: fake-gpu-operator
+      chartVersion: 0.2.0
+      releaseName: runai-fake-gpu-operator
+      releaseNamespace: gpu-operator
+      helmChartAction: Install
+      values: |
+        topology:
+          nodePools:
+            default: {gpuProduct: NVIDIA-H100-80GB-HBM3, gpuCount: 4, gpuMemory: 81559}
+        prometheus: {url: http://prometheus-operated.runai:9090}
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-backend
+spec:
+  tier: 50
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  policyRefs:
+    - kind: ConfigMap
+      namespace: projectsveltos
+      name: runai-sveltos-backend
+---
+apiVersion: config.projectsveltos.io/v1beta1
+kind: ClusterProfile
+metadata:
+  name: runai-cluster
+spec:
+  tier: 60
+  clusterSelector:
+    matchLabels: {stacks.loft.sh/runai: "true"}
+  policyRefs:
+    - kind: ConfigMap
+      namespace: projectsveltos
+      name: runai-sveltos-cluster

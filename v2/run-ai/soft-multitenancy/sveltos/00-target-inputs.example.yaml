@@ -1,0 +1,29 @@
+# Apply this file directly to target cluster. Do not apply it to management cluster.
+# This file contains public configuration only. Create Secrets separately from
+# environment variables or your secret manager; never commit secret payloads.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runai
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runai-backend
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runai-poc-config
+  namespace: runai
+  labels:
+    runai.sveltos.io/poc: "true"
+data:
+  tenant: runai
+  ingressClass: nginx
+  storageClass: do-block-storage
+  clusterName: jog-ai
+  runaiVersion: 2.24.86
+  # fake enables target-local node labeling for fake-gpu-operator.
+  # Set real before applying 20-real-gpu-profile.yaml.
+  gpuMode: fake

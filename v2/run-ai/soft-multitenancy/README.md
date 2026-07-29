@@ -6,6 +6,10 @@ It installs registry credentials, ingress-nginx, TLS, Prometheus, GPU support, c
 
 The Stack uses `nip.io` to make a control-plane FQDN from LoadBalancer IP address.
 
+## Sveltos POC
+
+`sveltos/` contains manifest-first Sveltos replacement POC. It maps Stack Apps to ClusterProfiles and uses target-local Jobs for Run:ai dynamic REST workflow. See [`sveltos/README.md`](sveltos/README.md).
+
 ## Requirements
 
 - A Loft Platform installation with StackInstance support.
