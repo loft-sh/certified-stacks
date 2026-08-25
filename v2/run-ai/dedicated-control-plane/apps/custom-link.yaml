@@ -16,7 +16,7 @@ spec:
       {{- $spaceNamespace := .Values.loft.space }}
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
-      {{- $projectNamespace := printf "p-%s" .Values.loft.project }}
+      {{- $projectNamespace := printf "%s%s" .Values.projectNamespacePrefix .Values.loft.project }}
       # Each VCI has one retrying Job.
       # Job ownerReferences remove its space-namespace RBAC after the Job completes.
       # An ownerReference cannot cross namespaces.
@@ -298,3 +298,9 @@ spec:
     label: Tenant image pull Secret
     type: string
     variable: tenantImagePullSecret
+  - defaultValue: "p-"
+    description: Prefix Platform uses for project namespaces.
+    label: Project namespace prefix
+    type: string
+    validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
+    variable: projectNamespacePrefix

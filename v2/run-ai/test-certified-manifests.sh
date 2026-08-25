@@ -505,14 +505,14 @@ to_seconds() { # 600 | 12m | 1h
   esac
 }
 central_await=$(awk '/^    - name: discover$/{d=1} d && /awaitTimeoutSeconds:/{gsub(/[^0-9]/, ""); print; exit}' "$central")
-central_discover_timeout=$(awk '/^    - name: discover$/{d=1} d && /^      taskTimeout:/{print $2; exit}' "$central")
+central_discover_timeout=$(awk '/^    - name: discover$/{d=1} d && /^      timeout:/{print $2; exit}' "$central")
 [[ -n "$central_await" && "$central_await" -gt 300 ]] || {
   echo "FAIL $central: discover must raise awaitTimeoutSeconds above the App default of 300; got '${central_await:-unset}'" >&2
   echo "     It now waits out a concurrent registration, not just the vCluster syncer." >&2
   exit 1
 }
 [[ -n "$central_discover_timeout" ]] && [[ "$(to_seconds "$central_discover_timeout")" -ge "$central_await" ]] || {
-  echo "FAIL $central: discover taskTimeout '${central_discover_timeout:-unset}' is below awaitTimeoutSeconds ${central_await}s" >&2
+  echo "FAIL $central: discover timeout '${central_discover_timeout:-unset}' is below awaitTimeoutSeconds ${central_await}s" >&2
   echo "     The wait would be cut short and the failure would not name the Secret that never arrived." >&2
   exit 1
 }
@@ -676,9 +676,9 @@ for template in "$dedicated_link" "$central_link"; do
   # Job reports "VirtualClusterInstance not ready" until it gives up.
   require "$template" '\- name: PROJECT_NAMESPACE'
   require "$template" 'value: \{\{ \$projectNamespace \}\}'
-  # The project name is derived, never typed in. Only the installation-wide namespace prefix is
-  # written out, and a template that stops deriving the project pins every tenant to one project.
-  require "$template" 'projectNamespace := printf "p-%s" \.Values\.loft\.project'
+  # Project namespace prefix is installation-wide but configurable; tenant project remains derived.
+  require "$template" 'projectNamespace := printf "%s%s" \.Values\.projectNamespacePrefix \.Values\.loft\.project'
+  require "$template" 'variable: projectNamespacePrefix'
   if rg -q 'VCI_NAMESPACE' "$template"; then
     echo "FAIL $template: VCI_NAMESPACE conflates the space namespace with the project namespace" >&2
     exit 1
@@ -717,6 +717,13 @@ done
 require "$dedicated_link" 'vc_namespace" != "\$SPACE_NAMESPACE"'
 # Dedicated Job reads only its own vCluster credential, never every Secret in shared tenant space.
 require "$dedicated_link" 'resourceNames: \["vc-\{\{ \$vciName \}\}"\]'
+# Tenant templates expose Platform namespace prefix and forward it into custom-link App.
+for template in \
+  "$root/source/dedicated-control-plane/example/vcluster-template-with-runai-stack.yaml" \
+  "$root/source/central-control-plane/example/vcluster-template-with-runai-stack.yaml"; do
+  require "$template" 'variable: projectNamespacePrefix'
+  require "$template" 'projectNamespacePrefix: "\{\{ \.Values\.projectNamespacePrefix \}\}"'
+done
 # Dedicated tenancy knows its own control-plane FQDN, so it pins the Ingress host to the `domain`
 # input when one is set instead of trusting whatever host the tenant's Ingress happens to carry.
 require "$dedicated_link" '\- name: EXPECTED_HOST'

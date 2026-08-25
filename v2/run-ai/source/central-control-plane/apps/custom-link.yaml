@@ -19,9 +19,7 @@ spec:
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
       # Platform stores each VirtualClusterInstance in its project namespace.
-      # Current Platform installations use the `p-` prefix.
-      # Installations with the `loft-p-` prefix must change the value below.
-      {{- $projectNamespace := printf "p-%s" .Values.loft.project }}
+      {{- $projectNamespace := printf "%s%s" .Values.projectNamespacePrefix .Values.loft.project }}
       # Each VCI has one retrying Job.
       # Its TTL removes helper RBAC from the tenant space namespace.
       # Project and Ingress RBAC use Role-owned RoleBindings because ownerReferences cannot cross namespaces.
@@ -326,3 +324,9 @@ spec:
     label: Tenant image pull Secret
     type: string
     variable: tenantImagePullSecret
+  - defaultValue: "p-"
+    description: Prefix Platform uses for project namespaces.
+    label: Project namespace prefix
+    type: string
+    validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
+    variable: projectNamespacePrefix

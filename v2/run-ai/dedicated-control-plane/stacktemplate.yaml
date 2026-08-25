@@ -14,7 +14,7 @@ spec:
     registry Secrets, ingress-nginx, self-signed TLS for a derived nip.io FQDN (or an
     optional user-provided domain), the real NVIDIA GPU Operator, the control plane,
     three-call cluster registration, and the cluster components.
-  inputs:
+  parameters:
     - { variable: tenant, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
     - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
     - { variable: ingressProvider, type: string, required: true, defaultValue: standard, validation: '^(standard|aws)$' }
@@ -60,13 +60,13 @@ spec:
     # Helm executes bootstrap's pre-install hook before its regular manifests. Create this namespace
     # first because that hook writes the control-plane admin Secret and RBAC into it.
     - name: namespace
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-00-runai-backend-namespace }
 
     - name: registry
       dependsOn: [namespace]
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-01-registry-secret }
         parameters:
@@ -80,7 +80,7 @@ spec:
 
 
     - name: ingress
-      taskTimeout: 10m
+      timeout: 10m
       app:
         templateRef: { name: runai-step-02-ingress-nginx }
         parameters:
@@ -99,7 +99,7 @@ spec:
 
     - name: bootstrap
       dependsOn: [ingress, registry, namespace]
-      taskTimeout: 8m
+      timeout: 8m
       app:
         templateRef: { name: runai-step-04-bootstrap }
         parameters:
@@ -116,7 +116,7 @@ spec:
 
 
     - name: prometheus
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: runai-step-05-prometheus-operator }
 
@@ -128,7 +128,7 @@ spec:
     # GKE requires that quota before it admits a `system-node-critical` pod.
     - name: gpu
       dependsOn: [bootstrap, prometheus, namespace]
-      taskTimeout: 25m
+      timeout: 25m
       app:
         # A StackTemplate task cannot be conditionally skipped.
         # `gpuProvider: gke` selects the `-skip` App. That App does not install GPU Operator.
@@ -141,7 +141,7 @@ spec:
 
     - name: ingress-ready
       dependsOn: [ingress]
-      taskTimeout: 6m
+      timeout: 6m
       app:
         templateRef: { name: runai-step-03-ingress-admission-ready }
         parameters:
@@ -150,7 +150,7 @@ spec:
     # Keep task name `backend`. Chart requires release `runai-backend`.
     - name: backend
       dependsOn: [registry, bootstrap, ingress-ready]
-      taskTimeout: 30m
+      timeout: 30m
       app:
         templateRef: { name: runai-step-07-control-plane }
         parameters:
@@ -164,7 +164,7 @@ spec:
     # Use `bodySecret` and `bodySecretFields`. Do not use parameters.
     - name: authtoken
       dependsOn: [backend, ingress]
-      taskTimeout: 20m
+      timeout: 20m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -183,7 +183,7 @@ spec:
 
     - name: clusterreg
       dependsOn: [authtoken, ingress]
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -208,7 +208,7 @@ spec:
 
     - name: clustercreds
       dependsOn: [clusterreg, ingress]
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -227,7 +227,7 @@ spec:
     # Keep task name `cluster`. Chart requires release `runai-cluster`.
     - name: cluster
       dependsOn: [clusterreg, clustercreds, gpu, ingress]
-      taskTimeout: 30m
+      timeout: 30m
       app:
         templateRef: { name: runai-step-08-cluster }
         parameters:

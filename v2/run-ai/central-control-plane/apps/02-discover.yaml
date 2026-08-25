@@ -186,7 +186,7 @@ spec:
       type: string
     - variable: awaitTimeoutSeconds
       label: Await timeout (seconds)
-      # Keep below taskTimeout so failure identifies missing object instead of timing out.
+      # Keep below timeout so failure identifies missing object instead of timing out.
       description: Task wait limit in seconds.
       type: string
       defaultValue: "300"

@@ -32,7 +32,7 @@ spec:
     Operator that already exist on the Control Plane Cluster, plus a cluster registration performed
     by an administrator. Installs registry credentials, the Prometheus operator, and the run:ai
     cluster agent, taking every value from Secrets synced in from the host.
-  inputs:
+  parameters:
     - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
     # Wait for the control-plane CA Secret.
     # Set false only for a publicly trusted certificate. The host Stack creates no CA Secret then.
@@ -45,9 +45,9 @@ spec:
     # Export the synced Secret keys as task outputs.
     # Wait until every Secret exists. This prevents a race with vCluster sync.
     # The wait also covers tenant registration. That Stack may still write the facts Secret.
-    # `awaitTimeoutSeconds` is less than `taskTimeout` so the task names a missing Secret.
+    # `awaitTimeoutSeconds` is less than `timeout` so the task names a missing Secret.
     - name: discover
-      taskTimeout: 12m
+      timeout: 12m
       app:
         templateRef: { name: runai-step-02-discover }
         parameters:
@@ -71,7 +71,7 @@ spec:
     # The synced copy cannot be used directly: it is owned by the syncer and read-only in the tenant.
     - name: registry
       dependsOn: [discover]
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-01-registry-secret }
         parameters:
@@ -83,7 +83,7 @@ spec:
     # CRDs and operator only. The run:ai operator creates this tenant's own Prometheus instance from
     # RunaiConfig at runtime, which is why the CRDs must exist in the tenant's own API server.
     - name: prometheus
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: runai-step-05-prometheus-operator }
 
@@ -92,7 +92,7 @@ spec:
     # Registration creates both values. The control plane and agent use the same tenant URL.
     - name: cluster
       dependsOn: [discover, registry, prometheus]
-      taskTimeout: 30m
+      timeout: 30m
       app:
         templateRef: { name: runai-step-08-cluster }
         parameters:

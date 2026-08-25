@@ -59,6 +59,11 @@ spec:
       type: string
       defaultValue: ""
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    - variable: projectNamespacePrefix
+      description: Prefix Platform uses for project namespaces.
+      type: string
+      defaultValue: "p-"
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
 
     - variable: domain
       # DNS for this domain and its wildcard record must resolve to the ingress-nginx LoadBalancer IP.
@@ -83,6 +88,7 @@ spec:
             createCustomLinkJob: {{ .Values.createCustomLinkCronJob }}
             domain: "{{ .Values.domain }}"
             tenantImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+            projectNamespacePrefix: "{{ .Values.projectNamespacePrefix }}"
     instanceTemplate:
       metadata:
         labels:
@@ -90,7 +96,7 @@ spec:
           runai.loft.sh/tenancy-model: dedicated-control-plane
     helmRelease:
       chart:
-        version: "0.36.1"
+        version: "0.37.0-rc.3"
       values: |-
         {{ if .Values.tenantImagePullSecret }}
         controlPlane:
@@ -104,7 +110,7 @@ spec:
             - name: runai
               templateRef:
                 name: run-ai-dedicated-control-plane
-              inputs:
+              parameters:
                 tenant: {{ .Values.tenant }}
                 clusterName: {{ .Values.tenant }}
                 storageClass: {{ .Values.storageClass }}

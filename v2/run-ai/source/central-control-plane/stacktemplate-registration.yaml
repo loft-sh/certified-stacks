@@ -31,7 +31,7 @@ spec:
     Administrator-only. Registers one tenant cluster against the shared run:ai control plane and
     publishes a single Secret holding everything that tenant's Stack needs. Deleting this instance
     deregisters only this tenant.
-  inputs:
+  parameters:
     # This immutable tenant identity becomes the run:ai cluster name and Secret suffix.
     # It must be unique. `clusterreg` matches an existing cluster by this name.
     # Duplicate values let two registrations use and deregister the same run:ai cluster.
@@ -58,7 +58,7 @@ spec:
     # Read the values published by the host Stack.
     # This task names the missing ConfigMap when the host foundation is not ready.
     - name: discover
-      taskTimeout: 6m
+      timeout: 6m
       app:
         templateRef: { name: runai-step-02-discover }
         parameters:
@@ -91,7 +91,7 @@ spec:
     # Use `bodySecret` and `bodySecretFields`. Do not use parameters.
     - name: authtoken
       dependsOn: [discover]
-      taskTimeout: 20m
+      timeout: 20m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -110,7 +110,7 @@ spec:
 
     - name: clusterreg
       dependsOn: [authtoken]
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -135,7 +135,7 @@ spec:
 
     - name: clustercreds
       dependsOn: [clusterreg]
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: restful-operation }
         parameters:
@@ -157,7 +157,7 @@ spec:
     # The registered domain and tenant domain remain the same.
     - name: facts
       dependsOn: [discover, clusterreg, clustercreds]
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-03-tenant-facts }
         parameters:

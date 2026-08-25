@@ -25,5 +25,5 @@ spec:
   # No inputs. Defaults cover IngressClass `nginx` and waiting for the control plane's CA. Set this
   # only when the control plane serves a publicly trusted certificate, in which case no
   # `runai-ca-cert` is ever created and waiting for one would never return:
-  # inputs:
+  # parameters:
   #   requireControlPlaneCA: "false"

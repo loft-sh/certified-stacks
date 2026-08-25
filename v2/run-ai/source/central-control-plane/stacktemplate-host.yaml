@@ -20,7 +20,7 @@ spec:
     Administrator-only. Installs registry credentials, TLS and CA bootstrap, the NVIDIA GPU
     Operator, and the run:ai self-hosted control plane once on the Control Plane Cluster. Central control-plane
     tenant clusters share all of it. Reuses an existing host ingress-nginx.
-  inputs:
+  parameters:
     # Do not use `tenant`. A shared control plane is not a tenant.
     - { variable: controlPlaneName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
     # IPv4 address of the existing host ingress-nginx LoadBalancer.
@@ -73,13 +73,13 @@ spec:
     # Helm executes bootstrap's pre-install hook before its regular manifests. Create this namespace
     # first because that hook writes the control-plane admin Secret and RBAC into it.
     - name: namespace
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-00-runai-backend-namespace }
 
     - name: registry
       dependsOn: [namespace]
-      taskTimeout: 5m
+      timeout: 5m
       app:
         templateRef: { name: runai-step-01-registry-secret }
         parameters:
@@ -93,7 +93,7 @@ spec:
 
     - name: bootstrap
       dependsOn: [registry, namespace]
-      taskTimeout: 15m
+      timeout: 15m
       app:
         templateRef: { name: runai-step-04-bootstrap-host }
         parameters:
@@ -126,7 +126,7 @@ spec:
     # GKE requires that quota before it admits a `system-node-critical` pod.
     - name: gpu
       dependsOn: [namespace]
-      taskTimeout: 25m
+      timeout: 25m
       app:
         # A StackTemplate task cannot be conditionally skipped.
         # `gpuProvider: gke` selects the `-skip` App. That App does not install GPU Operator.
@@ -140,7 +140,7 @@ spec:
     # Keep task name `backend`. Chart requires release `runai-backend`.
     - name: backend
       dependsOn: [registry, bootstrap]
-      taskTimeout: 30m
+      timeout: 30m
       app:
         templateRef: { name: runai-step-07-control-plane }
         parameters:

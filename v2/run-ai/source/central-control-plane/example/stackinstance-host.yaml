@@ -18,7 +18,7 @@ spec:
       name: loft-cluster
   templateRef:
     name: run-ai-central-control-plane-host
-  inputs:
+  parameters:
     controlPlaneName: runai
     hostIngressAddress: "<HOST_NGINX_LOADBALANCER_IPV4>"
     storageClass: "<STORAGE_CLASS>"

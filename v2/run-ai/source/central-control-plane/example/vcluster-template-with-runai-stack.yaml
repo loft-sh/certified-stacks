@@ -22,8 +22,9 @@ metadata:
 spec:
   displayName: Run:ai central-control-plane tenant
   description: >-
-    Creates a tenant cluster, registers it with the shared run:ai control plane, and deploys the
-    run:ai cluster agent through deploy.stacks. This is not a one-shot host installation: it reuses
+    Apply host and registration StackTemplates first. This template creates a tenant cluster,
+    registers it with the shared run:ai control plane, and deploys the run:ai cluster agent through
+    deploy.stacks. This is not a one-shot host installation: it reuses
     shared host infrastructure. Before creation, platform operators must install the shared host
     foundation, provide ingress-nginx with IngressClass `nginx` and its LoadBalancer IPv4 address,
     and label the GPU nodes this tenant may use. Operate and delete shared host infrastructure
@@ -49,6 +50,11 @@ spec:
       type: string
       defaultValue: ""
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    - variable: projectNamespacePrefix
+      description: Prefix Platform uses for project namespaces.
+      type: string
+      defaultValue: "p-"
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
     - variable: controlPlaneClusterName
       # Change only when Platform connected cluster is not named loft-cluster.
       description: Name of Platform control-plane cluster.
@@ -89,7 +95,7 @@ spec:
               name: {{ .Values.controlPlaneClusterName }}
           templateRef:
             name: run-ai-central-control-plane-registration
-          inputs:
+          parameters:
             tenantSlug: {{ .Values.loft.virtualClusterName }}
             hookImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
         {{- end }}
@@ -99,6 +105,7 @@ spec:
             createCustomLinkJob: {{ .Values.createCustomLinkCronJob }}
             controlPlaneClusterName: "{{ .Values.controlPlaneClusterName }}"
             tenantImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+            projectNamespacePrefix: "{{ .Values.projectNamespacePrefix }}"
     instanceTemplate:
       metadata:
         labels:
@@ -106,7 +113,7 @@ spec:
           runai.loft.sh/tenancy-model: central-control-plane
     helmRelease:
       chart:
-        version: "0.36.1"
+        version: "0.37.0-rc.3"
       values: |-
         {{ if .Values.tenantImagePullSecret }}
         controlPlane:

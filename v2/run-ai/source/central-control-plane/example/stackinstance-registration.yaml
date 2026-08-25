@@ -26,7 +26,7 @@ spec:
       name: loft-cluster
   templateRef:
     name: run-ai-central-control-plane-registration
-  inputs:
+  parameters:
     tenantSlug: tenant-a
     # Optional. Empty derives `tenant-a.<host ingress address>.nip.io` from the address the host
     # Stack published, and the tenant reads the result back out of the facts Secret, so there is no

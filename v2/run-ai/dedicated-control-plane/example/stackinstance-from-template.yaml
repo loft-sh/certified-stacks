@@ -14,7 +14,7 @@ spec:
   templateRef:
     name: run-ai-dedicated-control-plane
   # Set `runaiRegistryCredentials` and `storageClass` before you apply this stack.
-  inputs:
+  parameters:
     tenant: runai
     # runaiRegistryCredentials: "<JFROG_TOKEN>"
     # storageClass: "<STORAGE_CLASS>"
