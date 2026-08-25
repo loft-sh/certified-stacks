@@ -218,9 +218,17 @@ spec:
                       echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: VirtualClusterInstance not ready" >&2; exit 1;
                     }
                     current="$(printf '%s' "$instance" | jq -r --arg annotation "$annotation" '(.metadata.annotations // {})[$annotation] // empty')"
-                    if [ -n "$current" ]; then
+                    has_runai_link=false
+                    while IFS= read -r link || [ -n "$link" ]; do
+                      case "$link" in
+                        RunAI_UI=*) has_runai_link=true ;;
+                      esac
+                    done <<EOF
+                    $current
+                    EOF
+                    if "$has_runai_link"; then
                       cleanup_project_access
-                      echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: custom link already set"
+                      echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: RunAI_UI custom link already set"
                       exit 0
                     fi
 
@@ -254,7 +262,13 @@ spec:
                     case "$host" in
                       *[!a-z0-9.-]*|-*|.*|*..*) echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: refusing malformed host '$host'" >&2; exit 1 ;;
                     esac
-                    patch="$(jq -cn --arg annotation "$annotation" --arg value "RunAI_UI=https://$host" '{metadata: {annotations: {($annotation): $value}}}')"
+                    link="RunAI_UI=https://$host"
+                    if [ -n "$current" ]; then
+                      link_value="$(printf '%s\n%s' "$current" "$link")"
+                    else
+                      link_value="$link"
+                    fi
+                    patch="$(jq -cn --arg annotation "$annotation" --arg value "$link_value" '{metadata: {annotations: {($annotation): $value}}}')"
                     kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.storage.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
                     echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: set $annotation to RunAI_UI=https://$host"
                     cleanup_project_access

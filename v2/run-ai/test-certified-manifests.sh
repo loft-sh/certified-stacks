@@ -666,6 +666,11 @@ for template in "$dedicated_link" "$central_link"; do
   # The selected host goes into a URL annotation, and the dropped nip.io suffix check is what used to
   # constrain its characters, so the explicit guard is now the only one.
   require "$template" 'refusing malformed host'
+  # Custom links are newline-separated. A pre-existing unrelated link must not suppress RunAI_UI.
+  require "$template" 'has_runai_link=false'
+  require "$template" 'while IFS= read -r link \|\| \[ -n "\$link" \]'
+  require "$template" 'RunAI_UI=\*\) has_runai_link=true'
+  require "$template" 'link_value="\$\(printf '\''%s\\n%s'\'' "\$current" "\$link"\)"'
   # Platform keeps the VCI in its project namespace, never in the tenant's space namespace, so the
   # Job reads and patches it there. Reading it from the pod's own namespace finds nothing and the
   # Job reports "VirtualClusterInstance not ready" until it gives up.
