@@ -41,6 +41,7 @@ spec:
       rules:
         - apiGroups: [""]
           resources: ["secrets"]
+          resourceNames: ["vc-{{ $vciName }}"]
           verbs: ["get"]
         - apiGroups: ["batch"]
           resources: ["jobs"]

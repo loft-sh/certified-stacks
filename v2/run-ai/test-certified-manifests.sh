@@ -715,6 +715,8 @@ done
 # clusterRef.namespace is the tenant's space, which is the namespace this Job runs in, so it is
 # compared against the space namespace and not the project namespace the VCI itself lives in.
 require "$dedicated_link" 'vc_namespace" != "\$SPACE_NAMESPACE"'
+# Dedicated Job reads only its own vCluster credential, never every Secret in shared tenant space.
+require "$dedicated_link" 'resourceNames: \["vc-\{\{ \$vciName \}\}"\]'
 # Dedicated tenancy knows its own control-plane FQDN, so it pins the Ingress host to the `domain`
 # input when one is set instead of trusting whatever host the tenant's Ingress happens to carry.
 require "$dedicated_link" '\- name: EXPECTED_HOST'
