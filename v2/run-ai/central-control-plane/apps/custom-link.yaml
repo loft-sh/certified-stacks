@@ -13,23 +13,18 @@ spec:
     manifests: |2
       {{- if .Values.createCustomLinkJob }}
       {{- $vciName := .Values.loft.virtualClusterName }}
-      # The Platform renders this App as a Helm release and supplies `.Values.loft` beside the
-      # parameters the VirtualClusterTemplate passed in. `.Values.loft.space` is the tenant's space
-      # namespace, which is this release's namespace and the one these objects apply into.
+      # Platform renders this App as a Helm release.
+      # `.Values.loft.space` is the tenant space namespace and release namespace.
       {{- $spaceNamespace := .Values.loft.space }}
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
-      # Platform keeps every VirtualClusterInstance in its project namespace on the Control Plane
-      # Cluster, named `<prefix><project>`, not in the tenant's own space namespace. `.Values.loft`
-      # carries the project but not the prefix, and the prefix is an installation-wide Platform
-      # setting, so it is written out here: `p-` on current installations. An installation still on
-      # the legacy `loft-p-` prefix has to change it below, and shows up as this App failing to
-      # apply a Role into a namespace that does not exist.
+      # Platform stores each VirtualClusterInstance in its project namespace.
+      # Current Platform installations use the `p-` prefix.
+      # Installations with the `loft-p-` prefix must change the value below.
       {{- $projectNamespace := printf "p-%s" .Values.loft.project }}
-      # One retrying Job per VCI. Space-namespace helper RBAC is owned by this Job and removed by
-      # its TTL. An ownerReference only binds within one namespace, so the project-namespace RBAC
-      # that reaches the VCI and the shared-Ingress RBAC are each removed before Job success
-      # through a Role-owned RoleBinding.
+      # Each VCI has one retrying Job.
+      # Its TTL removes helper RBAC from the tenant space namespace.
+      # Project and Ingress RBAC use Role-owned RoleBindings because ownerReferences cannot cross namespaces.
       apiVersion: v1
       kind: ServiceAccount
       metadata:

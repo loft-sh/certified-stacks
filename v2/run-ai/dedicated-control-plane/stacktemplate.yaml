@@ -44,11 +44,11 @@ spec:
     - { variable: userTlsKey, type: password }
     - { variable: userCaCert, type: multiline }
     - { variable: customCAEnabled, type: boolean, defaultValue: "true" }
-    # Who owns the node-level GPU stack. `gke` installs no GPU Operator at all and leaves GPUs to
-    # Google's own driver, containerd config, and device plugin, which makes the three inputs below
-    # moot; leaving this `standard` on a default GKE GPU pool instead hangs the `gpu` task for its
-    # whole timeout. Use `standard` on a GKE Ubuntu pool created with gpu-driver-version=disabled,
-    # which is NVIDIA's supported GPU Operator path. See `apps/06-gpu-operator-skip.yaml`.
+    # Select the node GPU stack owner.
+    # `gke` uses the Google driver, containerd configuration, and device plugin.
+    # Do not use `standard` on a default GKE GPU pool. The `gpu` task will time out.
+    # Use `standard` on a GKE Ubuntu pool with `gpu-driver-version=disabled`.
+    # See `apps/06-gpu-operator-skip.yaml`.
     - { variable: gpuProvider, type: string, required: true, defaultValue: standard, validation: '^(standard|gke)$' }
     # Set `gpuDriverEnabled: true` for nodes without NVIDIA drivers.
     - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false" }
@@ -123,17 +123,16 @@ spec:
     # Use GPU nodes for this step.
     # Configure `nvidia` RuntimeClass and GPU node labels before you apply this stack.
     #
-    # `namespace` is named here even though `bootstrap` already implies it. That task creates the
-    # gpu-operator namespace and the PriorityClass-scoped pod quota GKE requires before any
-    # `system-node-critical` pod in it is admitted, so the edge is load-bearing rather than
-    # incidental, and must survive anyone rewiring bootstrap.
+    # Keep `namespace` in `dependsOn`.
+    # It creates the `gpu-operator` namespace and its GKE PriorityClass quota.
+    # GKE requires that quota before it admits a `system-node-critical` pod.
     - name: gpu
       dependsOn: [bootstrap, prometheus, namespace]
       taskTimeout: 25m
       app:
-        # A task cannot be conditionally skipped, but every string in a task is rendered, so the
-        # App this points at is chosen here: `gpuProvider: gke` resolves to the -skip App, which
-        # installs no GPU Operator. See `apps/06-gpu-operator-skip.yaml`.
+        # A StackTemplate task cannot be conditionally skipped.
+        # `gpuProvider: gke` selects the `-skip` App. That App does not install GPU Operator.
+        # See `apps/06-gpu-operator-skip.yaml`.
         templateRef: { name: "runai-step-06-gpu-operator{{ if eq .Values.gpuProvider \"gke\" }}-skip{{ end }}" }
         parameters:
           driverEnabled: "{{ .Values.gpuDriverEnabled }}"

@@ -1,15 +1,13 @@
 # run:ai Central Control-Plane Stack
 
-Central control-plane tenancy shares one run:ai control plane and one NVIDIA GPU Operator across every tenant cluster
-on a Control Plane Cluster. An administrator installs those once. Each tenant cluster then runs only
-its own run:ai cluster agent, Prometheus operator, registry credentials, and workloads, and
-registers against the shared control plane.
+Central control-plane tenancy shares one run:ai control plane and one NVIDIA GPU Operator among tenant clusters.
+An administrator installs these shared components once. Each tenant runs its own cluster agent,
+Prometheus operator, registry credentials, and workloads. Each tenant registers with the shared control plane.
 
-This follows vCluster's [shared platform stack](https://www.vcluster.com/blog/vcluster-shared-platform-stack)
-pattern, same shape `ray-io/soft-multitenancy` uses for KubeRay operator.
+This design follows vCluster's [shared platform stack](https://www.vcluster.com/blog/vcluster-shared-platform-stack)
+pattern. `ray-io/soft-multitenancy` uses this pattern for the KubeRay operator.
 
-Dedicated control-plane tenancy is the opposite trade: `dedicated-control-plane/` gives every tenant its own ingress
-controller, GPU Operator, and control plane.
+`dedicated-control-plane/` gives each tenant its own ingress controller, GPU Operator, and control plane.
 
 ## Architecture
 
@@ -43,26 +41,23 @@ not get isolated compute or network. See [Isolation](#isolation).
 | Requirement | Details |
 | --- | --- |
 | vCluster Platform | With StackInstance support, and `kubectl` access to the target cluster. |
-| ingress-nginx | Already installed, IngressClass `nginx`, with a LoadBalancer IPv4 address. Not part of this bundle. |
+| ingress-nginx | Already installed, IngressClass `nginx`, with a LoadBalancer IPv4 address. This bundle does not install it. |
 | Storage class | For the shared control plane's persistent volumes. |
 | GPU nodes | With NVIDIA drivers, and the `nvidia` RuntimeClass on the Control Plane Cluster. |
 | Tenant node labels | Every GPU node a tenant may use must carry that tenant's label. See [Node labelling](#node-labelling). |
-| JFrog token | Able to pull images from `runai.jfrog.io`. |
-| Job image | Nodes able to pull the Platform-provided job image. It must include `openssl`, `kubectl`, `jq`, `curl`, and `sh`. If it comes from a private registry, see [Pulling the job image](#pulling-the-job-image). |
+| JFrog token | Can pull images from `runai.jfrog.io`. |
+| Job image | Nodes can pull the Platform-provided job image. It must include `openssl`, `kubectl`, `jq`, `curl`, and `sh`. For a private registry, see [Pulling the job image](#pulling-the-job-image). |
 
 ### Pulling the job image
 
-The bootstrap Jobs run as the vCluster Platform's own image. The Platform injects that image
-reference into the App as `__image__`, taken from the `manager` container of its own running pod.
-It injects the reference only. The Platform pod's `imagePullSecrets` do not come with it.
+Bootstrap Jobs use the vCluster Platform image. Platform provides its reference as `__image__`.
+Platform does not provide the pod `imagePullSecrets`.
 
-Under dedicated control-plane tenancy this never surfaces, because those Jobs run inside a tenant cluster: vCluster
-syncs their pods to the Control Plane Cluster under its workload ServiceAccount, and that account
-carries `tenantImagePullSecret` from tenant cluster template. Under central control-plane tenancy
-the host Stack runs directly on the Control Plane Cluster. There is no vCluster in that path and no
-workload ServiceAccount, so nothing supplies a credential.
+Dedicated control-plane Jobs run in a tenant cluster. vCluster syncs them with the workload ServiceAccount,
+which uses `tenantImagePullSecret`. Central control-plane host Jobs run on the Control Plane Cluster.
+They have no tenant workload ServiceAccount. Set a pull Secret when their registry requires credentials.
 
-If your Platform image comes from a public registry, ignore this. Otherwise check where it comes
+If your Platform image is from a public registry, ignore this. Otherwise check where it comes
 from:
 
 ```bash
@@ -89,8 +84,8 @@ to the registration it creates. Set it on a hand-applied
 registration StackInstance too, if you use one. Leave it unset everywhere if the image pulls
 anonymously.
 
-It is the one registration value the cluster template has to be told rather than discover. The
-registration's very first Job needs a pull credential before anything it could read exists.
+The cluster template must receive this registration value. It cannot discover it because the
+registration's first Job needs a pull credential before it can read a value.
 
 This is not `runai-reg-creds`. That Secret authenticates to `runai.jfrog.io` for the run:ai product
 images, and Kubernetes matches pull secrets by registry host, so it does nothing for a Platform
@@ -129,51 +124,46 @@ kubectl get stackinstance runai -n p-default \
 
 ### 4. Create a tenant cluster
 
-Apply `example/vcluster-template-with-runai-stack.yaml`, then create a cluster from it. The only
-required parameter is `nodeSelectorValue`. Nothing about the cluster's name has to match anything.
+Apply `example/vcluster-template-with-runai-stack.yaml`, then create a cluster from it.
+Set `nodeSelectorValue`. You can use any cluster name.
 
-Creating it registers it. The template's `spaceTemplate` writes a `run-ai-central-control-plane-registration`
-StackInstance named `runai-reg-<cluster name>` into the cluster's own space on the Control Plane
-Cluster, passing the cluster's name as `tenantSlug`. The registration and the tenant cluster come up
-in parallel; the tenant Stack's first task waits for the facts Secret the registration publishes, and
-that wait is what sequences them.
+Creating a tenant cluster creates its registration. `spaceTemplate` writes a
+`run-ai-central-control-plane-registration` StackInstance in the tenant space. Name this StackInstance
+`runai-reg-<cluster name>`. It uses the cluster name as `tenantSlug`.
 
-Set `tenantImagePullSecret` if the Platform image needs a credential. Registration hook Jobs run that
-image directly on the Control Plane Cluster, and this is the one value they cannot discover for
-themselves: the first Job needs it before any discovery runs. See
-[Pulling the job image](#pulling-the-job-image).
+The tenant cluster and registration can start at the same time. The tenant `discover` task waits for
+the facts Secret. It starts only after registration publishes that Secret.
 
-The registration Stack takes no credentials. It runs in namespace `runai-backend`, where the host
-Stack already wrote `runai-control-plane-admin`, and reads it from there. It takes no control-plane
-FQDN either: the host Stack published one in the `runai/runai-control-plane-endpoint` ConfigMap,
-along with the ingress LoadBalancer address and whether its CA has to be trusted, and the
-registration's `discover` task reads all three back. The run:ai cluster domain derives as
-`<slug>.<address>.nip.io`. It is not a vCluster Kubernetes API-server URL.
+Set `tenantImagePullSecret` when the Platform image needs credentials. Registration hook Jobs run
+on the Control Plane Cluster. Their first Job needs this Secret before it can discover any values.
+See [Pulling the job image](#pulling-the-job-image).
 
-Its last task writes `runai-backend/runai-tenant-facts-<slug>`, holding the control plane's FQDN,
-this tenant's cluster URL, its cluster UID, its client secret, and the CA setting. That one Secret is
-the whole interface to the tenant: the cluster template syncs it to `runai/runai-tenant-facts` and
-the tenant Stack reads it before installing the agent. Do not copy its values into tenant parameters.
+The registration Stack takes no credentials or control-plane FQDN. It reads
+`runai-control-plane-admin` from `runai-backend`. Its `discover` task reads the FQDN, ingress address,
+and CA setting from `runai/runai-control-plane-endpoint`. The run:ai cluster domain is
+`<slug>.<address>.nip.io`. It is not a vCluster API server URL.
 
-Nothing about certificates. The control plane's CA reaches the tenant on its own; see
-[Trusting the control plane](#trusting-the-control-plane).
+The last task writes `runai-backend/runai-tenant-facts-<slug>`.
+This Secret contains the control-plane FQDN, tenant URL, UID, client secret, and CA setting.
+The cluster template syncs it as `runai/runai-tenant-facts`. The tenant Stack reads it before it installs the agent.
+Do not copy these values into tenant parameters.
 
-The tenant cluster installs no control plane and no GPU Operator. It sees GPUs because
-`sync.fromHost.nodes` copies the labelled host nodes, with their `nvidia.com/gpu` capacity and
-NFD/GFD labels, into the tenant's API server, and `sync.fromHost.runtimeClasses` brings in the
-`nvidia` RuntimeClass that run:ai GPU workloads select.
+The cluster template also syncs the control-plane CA. See [Trusting the control plane](#trusting-the-control-plane).
+
+The tenant cluster does not install the control plane or GPU Operator.
+`sync.fromHost.nodes` copies labeled host nodes, GPU capacity, and NFD/GFD labels to the tenant API server.
+`sync.fromHost.runtimeClasses` copies the `nvidia` RuntimeClass for run:ai GPU workloads.
 
 ### Registering a tenant ahead of its cluster
 
-The standalone path, for pre-registering tenants before their clusters exist or registering one under
-a name that is not its cluster's. Copy `example/stackinstance-registration.yaml`, set `tenantSlug`,
-and name the instance `runai-reg-<tenantSlug>`. Then set `tenantSlug` on the cluster template to the
-same value.
+Use standalone registration to register a tenant before its cluster exists. You can also use it to
+register a tenant whose name differs from its cluster name. Copy
+`example/stackinstance-registration.yaml`. Set `tenantSlug`. Name the instance
+`runai-reg-<tenantSlug>`. Set the cluster template `tenantSlug` to same value.
 
-That parameter means "a registration for this tenant already exists". It suppresses the one the
-template would otherwise create and points the facts Secret mapping at yours. Leave it empty in every
-other case: setting it when no such registration exists leaves the tenant waiting for a facts Secret
-nobody writes.
+`tenantSlug` means that registration already exists. It stops the template from creating another
+registration. It maps the facts Secret to existing registration. Leave it empty unless registration
+already exists. Otherwise, the tenant waits for a facts Secret that no task writes.
 
 `tenantSlug` must be unique across the control plane. Registration matches an existing run:ai cluster
 by that name, so two registrations sharing a slug adopt the same run:ai cluster and either one can
@@ -206,7 +196,7 @@ Two rules, both load-bearing:
 ## TLS
 
 TLS is a Control Plane Cluster concern. The host Stack's `bootstrap` step issues the certificate
-once; tenants never handle certificates at all and no tenant ever holds a private key.
+once. Tenants never handle certificates at all and no tenant ever holds a private key.
 
 By default `bootstrap` issues a self-signed CA and leaf inside the Control Plane Cluster. Use a
 trusted certificate before production use.
@@ -246,14 +236,11 @@ sync:
           "runai/runai-reg-creds": "runai/runai-reg-creds-host"
 ```
 
-The facts mapping resolves because the same template registered this cluster under this name. Nobody
-has to keep a cluster name and a slug in step; `tenantSlug` overrides both halves at once when you
-point a cluster at a registration someone made by hand.
+The facts mapping resolves because this template registered the cluster with this name.
+`tenantSlug` selects both the registration and facts Secret for a hand-applied registration.
 
-Three things follow. Whoever creates a tenant needs to know nothing about certificates, registration
-outputs, or registry tokens. A CA rotation reaches every tenant on its own, where a copied value goes
-stale silently and breaks every agent at once. And the tenant's run:ai `cluster.url` always equals the
-domain it was registered with, because both come from the same Secret.
+Tenant creators do not need certificates, registration outputs, or registry tokens.
+CA rotation reaches each tenant through Secret sync. The tenant `cluster.url` uses the registered domain.
 
 None of the three is a Stack task, so nothing would sequence them against the `cluster` task. The
 tenant Stack's first task is `discover`, whose hook Job blocks until all three exist and then fails
@@ -294,20 +281,19 @@ TLS_MODE=user-provided bash tests/verify-certs.sh
 Central control-plane tenancy isolates the Kubernetes API, RBAC, namespaces, and run:ai cluster identity. It does not
 isolate compute or network:
 
-- Tenants share host nodes. Node labels partition them; they are a policy, not a boundary.
+- Tenants share host nodes. Node labels partition them. They are a policy, not a boundary.
 - `policies.networkPolicy` is disabled, so tenants are not network-isolated from each other or from
   host services.
 - Tenants share one run:ai control plane. Separation inside it is run:ai's own, through its projects
   and departments.
 - No tenant receives control-plane administrator credentials, a TLS private key, or cluster-wide node
   permission. Each tenant does hold its own per-cluster agent OIDC secret, but as a Secret synced into
-  its `runai` namespace rather than a value in a StackInstance or cluster parameter. It still reaches
+  its `runai` namespace instead of a value in a StackInstance or cluster parameter. It still reaches
   that Stack's task outputs, so restrict RBAC on `stackinstances` and `virtualclusterinstances`
   accordingly.
-- A tenant's registration StackInstance now lives in that tenant's own space namespace on the Control
-  Plane Cluster. Its published outputs are that tenant's own FQDN, cluster UID, and client secret, and
-  the administrator password stays in `runai-backend/runai-control-plane-admin` where only the Stack's
-  Jobs read it. The RBAC note above covers the space too.
+- Each tenant registration StackInstance is in its tenant space namespace on the Control Plane Cluster.
+  Its outputs include only that tenant's FQDN, cluster UID, and client secret. The administrator password
+  remains in `runai-backend/runai-control-plane-admin`. Only Stack Jobs read it. Apply the RBAC guidance to this space.
 
 Use `dedicated-control-plane/` where compute isolation is required.
 
@@ -315,9 +301,9 @@ Use `dedicated-control-plane/` where compute isolation is required.
 
 - **GPU metrics.** `dcgm-exporter` now runs on the Control Plane Cluster in namespace `gpu-operator`,
   outside every tenant's API server, so a tenant's Prometheus cannot scrape it and run:ai GPU
-  utilisation views may be empty. Allocation still works, because capacity comes from synced node
-  objects. Exposing the exporter to tenants would leak every tenant's GPU metrics unless each scrape
-  config filters to its own nodes, which is a policy rather than a boundary.
+  utilisation views may be empty. Allocation still works because synced node objects provide
+  capacity. Exposing the exporter to tenants would leak every tenant's GPU metrics unless each scrape
+  config filters to its own nodes. This is a policy, not a boundary.
 - **Tenant workload TLS.** Tenant Ingresses are served with ingress-nginx's default certificate. Issue
   per-tenant certificates with cert-manager on the Control Plane Cluster if you need them.
 - **Tenant volumes** use the Control Plane Cluster's default StorageClass. Only the shared control
@@ -332,7 +318,7 @@ Use `dedicated-control-plane/` where compute isolation is required.
 | `apps/03-tenant-facts.yaml` | App `runai-step-03-tenant-facts`. Central-only. Writes the one per-tenant Secret the tenant Stack reads. |
 | `apps/04-bootstrap.yaml` | App `runai-step-04-bootstrap-host`. Named apart from dedicated control-plane tenancy's `runai-step-04-bootstrap` because it runs on the Control Plane Cluster and takes `hookImagePullSecret`. |
 | `stacktemplate-host.yaml` | Shared control plane and GPU Operator. Apply once per Control Plane Cluster. |
-| `stacktemplate-registration.yaml` | Registers one tenant. The cluster template creates one instance of it per tenant; apply it by hand only to pre-register. |
+| `stacktemplate-registration.yaml` | Registers one tenant. The cluster template creates one instance of it per tenant. Apply it by hand only to pre-register. |
 | `stacktemplate.yaml` | Tenant runtime. Deployed inside each tenant cluster. |
 | `example/stackinstance-host.yaml` | Example shared host foundation instance. |
 | `example/stackinstance-registration.yaml` | Example registration instance, for the pre-registration path. |
@@ -369,7 +355,7 @@ fixed release names.
 
 Naming the host instance anything else, `runai-host` for example, silently yields
 `runai-host-backend` and breaks the control-plane chart. Registration instances have no such
-constraint; name them `runai-reg-<tenantSlug>`.
+constraint. Name them `runai-reg-<tenantSlug>`.
 
 ## Remove
 

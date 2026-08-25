@@ -1,22 +1,21 @@
 # run:ai Dedicated Control-Plane Stack
 
-This Stack installs a run:ai self-hosted control plane and cluster components.
+This Stack installs a self-hosted run:ai control plane and cluster components.
 
-It installs registry credentials, ingress-nginx, TLS, Prometheus, GPU support, control-plane services, cluster registration, and cluster components.
+It installs registry credentials, ingress-nginx, TLS, Prometheus, GPU support, control-plane services,
+and cluster registration.
 
-The Stack uses `nip.io` to make a control-plane FQDN from LoadBalancer IP address. Set the
-optional `domain` input to use a domain you control instead (see
-[Configure inputs](#configure-inputs)).
+The Stack derives a control-plane FQDN from the LoadBalancer IP address with `nip.io`.
+Set `domain` to use a domain you control. See [Configure inputs](#configure-inputs).
 
 ## Requirements
 
 - A vCluster Platform installation with StackInstance support.
-- A Kubernetes cluster that supports `LoadBalancer` Services. Set `ingressProvider: aws` when
-  AWS reports a hostname.
+- A Kubernetes cluster that supports `LoadBalancer` Services. Use `ingressProvider: aws` for an AWS hostname.
 - A storage class for control-plane persistent volumes.
-- A JFrog token that can pull images from `runai.jfrog.io`.
-- `kubectl` access to target platform cluster.
-- Nodes able to pull Platform-provided job image.
+- A JFrog token that pulls images from `runai.jfrog.io`.
+- `kubectl` access to the target Platform cluster.
+- Nodes that can pull the Platform job image.
 
 ## TLS
 
@@ -39,18 +38,19 @@ The step writes these Secrets:
 | `runai-ca-cert` | `runai-backend`, `runai` | CA as `runai-ca.pem`, for `global.customCA`. |
 | `runai-internal-ca` | `runai-backend` | CA certificate and key, for reuse. |
 
-The CA is stored in `runai-internal-ca` and reused. An upgrade reissues the leaf only when it no
-longer covers the FQDN or expires within 30 days, so trust survives upgrades.
+The Stack stores and reuses the CA in `runai-internal-ca`.
+On upgrade, it reissues the leaf when it no longer covers the FQDN or expires within 30 days.
+This preserves trust across upgrades.
 
-Upgrading from a release before `runai-internal-ca` existed rotates the CA once. Restart pods that
-mount `runai-ca-cert` after that upgrade.
+An upgrade from a release without `runai-internal-ca` rotates the CA once.
+Restart pods that mount `runai-ca-cert` after that upgrade.
 
 ### Use a trusted certificate
 
 Set `tlsMode: user-provided`. The step then skips `openssl` and publishes what you supply.
 
-Point at an existing Secret in the `runai` namespace with keys `tls.crt`, `tls.key`, and optionally
-`ca.crt`. Prefer this form. It keeps private keys out of the StackInstance.
+Use an existing Secret in the `runai` namespace with keys `tls.crt`, `tls.key`, and optionally
+`ca.crt`. Prefer this method. It keeps private keys out of the StackInstance.
 
 ```yaml
 inputs:
@@ -59,7 +59,7 @@ inputs:
 ```
 
 Supply PEM inline when no Secret can exist before the Stack runs. This Stack creates its own
-cluster, so inline is usually the only option here:
+cluster. Inline PEM is usually the only option:
 
 ```yaml
 inputs:
@@ -128,20 +128,19 @@ inputs:
 
 ### Use your own domain
 
-`domain` is optional. When empty, the Stack derives `<tenant>.<lb-ip>.nip.io` after the
-ingress-nginx LoadBalancer IP is assigned. When set, the Stack uses it as the control-plane FQDN
-everywhere: the TLS certificate SANs, `global.domain`, the API base URL, the run:ai cluster
-registration, and the cluster chart URLs.
+`domain` is optional. An empty value derives `<tenant>.<lb-ip>.nip.io` after ingress-nginx gets a LoadBalancer IP.
+When set, the Stack uses this FQDN for TLS SANs, `global.domain`, the API base URL, cluster registration,
+and cluster chart URLs.
 
 ```yaml
 inputs:
   domain: runai.example.com
 ```
 
-DNS for the domain and `*.` under it must resolve to the ingress-nginx LoadBalancer IP. The Stack
-publishes that address as the `ingressAddress` output; create the DNS records once it exists, or use a
-pre-provisioned static IP. Pair `domain` with `tlsMode: user-provided` for a publicly trusted
-certificate (see [TLS](#tls)).
+DNS for the domain and `*.` under it must resolve to the ingress-nginx LoadBalancer IP.
+The Stack publishes that address as `ingressAddress`. Create DNS records after it exists.
+You can also use a pre-provisioned static IP. Use `domain` with `tlsMode: user-provided` for a
+publicly trusted certificate. See [TLS](#tls).
 
 ## Install with NVIDIA GPU Operator
 
@@ -160,8 +159,9 @@ Use GPU nodes for this template.
 
 ## AWS / EKS
 
-Set `ingressProvider: aws` on the same `run-ai-dedicated-control-plane` StackTemplate. It adds NLB annotations and
-uses the load-balancer hostname as the derived FQDN. Do not apply a separate AWS StackTemplate.
+Set `ingressProvider: aws` on `run-ai-dedicated-control-plane`.
+It adds NLB annotations and uses the load-balancer hostname as the FQDN.
+Do not apply a separate AWS StackTemplate.
 
 ### Cluster prerequisites
 

@@ -5,14 +5,14 @@
 #   ./verify-certs.sh                      # self-signed (default)
 #   TLS_MODE=user-provided ./verify-certs.sh
 #
-# FQDN is read from the endpoint ConfigMap, so it always matches what the Stack derived.
-# Override with FQDN=... when testing a control plane published under a different name.
+# Read the FQDN from the endpoint ConfigMap. It matches the Stack-derived FQDN.
+# Set FQDN=... to test a control plane with a different name.
 set -uo pipefail
 
 TLS_MODE="${TLS_MODE:-self-signed}"
 BACKEND_NS="${BACKEND_NS:-runai-backend}"
 CLUSTER_NS="${CLUSTER_NS:-runai}"
-# openssl x509 -checkend takes seconds; keep this equal to RENEW_BEFORE_SECONDS in the bootstrap App.
+# `openssl x509 -checkend` uses seconds. Keep this equal to `RENEW_BEFORE_SECONDS` in the bootstrap App.
 RENEW_BEFORE_SECONDS="${RENEW_BEFORE_SECONDS:-2592000}"
 
 failures=0
@@ -111,7 +111,7 @@ else
     check "stored CA matches the published CA" \
       "cmp -s $workdir/internal-ca.crt $workdir/$BACKEND_NS-ca.pem"
   else
-    # Without this Secret the next upgrade regenerates the CA, which is the bug it exists to prevent.
+    # Without this Secret, the next upgrade creates a new CA.
     fail "$BACKEND_NS/runai-internal-ca has ca.crt"
   fi
   check "$BACKEND_NS/runai-internal-ca has ca.key" \

@@ -1,24 +1,20 @@
-# Creates a tenant cluster, its run:ai registration, and an owned run:ai StackInstance in that tenant.
+# This template creates a tenant cluster, its run:ai registration, and its run:ai StackInstance.
 #
-# Apply order, all of it before this template is used:
-#   1. kubectl apply -f apps/
-#   2. kubectl apply -f stacktemplate-host.yaml -f stacktemplate-registration.yaml -f stacktemplate.yaml
-#   3. Install the shared host foundation once   (example/stackinstance-host.yaml)
+# Before you use this template:
+#   1. Apply Apps and StackTemplates.
+#   2. Apply `stacktemplate-host.yaml`, `stacktemplate-registration.yaml`, and `stacktemplate.yaml`.
+#   3. Install `example/stackinstance-host.yaml` once.
 #
-# There is no per-tenant step. Creating a cluster from this template registers it: `spaceTemplate`
-# writes a `run-ai-central-control-plane-registration` StackInstance named after the cluster into the cluster's own
-# space, on the Control Plane Cluster. Nothing is copied out of that registration and pasted back in
-# either: the three Secret mappings below are how the tenant learns where its control plane is, which
-# cluster it registered as, what its client secret is, how to pull run:ai images, and which CA to
-# trust. The tenant Stack takes no inputs at all.
+# `spaceTemplate` creates a registration named after the tenant cluster.
+# The Secret mappings provide the control-plane address, client secret, registry credential, and CA.
+# The tenant Stack has no inputs.
 #
-# Set `tenantSlug` ONLY when an administrator already registered this tenant, under a name that is
-# not this cluster's. It suppresses the owned registration and points the facts mapping at the
-# existing one. Setting it while a registration under the cluster's own name is what you wanted
-# produces two registrations adopting one run:ai cluster, and either can deregister the other.
+# Set `tenantSlug` only for a tenant with an existing registration under a different name.
+# It disables the template registration and selects that registration's facts Secret.
+# Do not set it when the cluster-name registration exists. Two registrations can deregister the same cluster.
 #
-# This is not a one-shot installation. The run:ai control plane and the NVIDIA GPU Operator are
-# shared host components installed once by the host Stack; this tenant installs neither.
+# The shared host Stack installs the control plane and GPU Operator once.
+# This tenant installs neither.
 apiVersion: storage.loft.sh/v1
 kind: VirtualClusterTemplate
 metadata:
@@ -36,9 +32,9 @@ spec:
     user: admin
   parameters:
     - variable: nodeSelectorValue
-      # Value must be unique to one tenant. Each tenant scheduler assumes it owns all visible GPU
-      # capacity. Shared nodes can receive conflicting allocations. Nodes without matching label are
-      # invisible; a tenant with no matching nodes cannot schedule workloads.
+      # Use one value for one tenant.
+      # Each tenant scheduler assumes it owns all visible GPU capacity.
+      # A tenant without matching nodes cannot schedule workloads.
       description: Node label value for tenant GPU nodes.
       type: string
       required: true
@@ -60,9 +56,9 @@ spec:
       defaultValue: loft-cluster
       validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
     - variable: tenantSlug
-      # This suppresses template-created registration and maps tenant facts Secret from named
-      # registration. Leave empty to register cluster under its own name. A missing registration
-      # leaves tenant waiting for facts Secret.
+      # Set this only for an existing registration.
+      # An empty value creates a registration with the cluster name.
+      # A missing registration leaves the tenant waiting for its facts Secret.
       description: The name of a pre-existing run:ai cluster.  Otherwise, leave this field blank.
       type: string
       defaultValue: ""
@@ -74,9 +70,9 @@ spec:
       type: boolean
       defaultValue: "true"
   template:
-    # There should be a one-to-one relationship between a run:ai cluster and this tenant cluster.  For a run:ai cluster
-    # that was registered first, you can specify the `tenantSlug` (e.g. runai-tenant) and it will be adopted.
-    # If unset, the names will be made to match and the registration will happen as part of creation.
+    # Each tenant cluster uses one run:ai cluster.
+    # Set `tenantSlug` to adopt an existing registration.
+    # An empty value creates a registration with the tenant cluster name.
     spaceTemplate:
       objects: |-
         {{- if not .Values.tenantSlug }}
@@ -143,21 +139,20 @@ spec:
               enabled: true
             ingressClasses:
               enabled: true
-            # The tenant's entire configuration, as three Secrets. Nothing here is a parameter, which
-            # is the point: a pasted cluster UID or client secret goes stale silently, and a pasted CA
-            # breaks every agent at once on rotation.
+            # These three Secrets provide tenant configuration.
+            # Do not copy the UID, client secret, or CA into parameters. Secret sync updates rotated values.
             secrets:
               enabled: true
               mappings:
                 byName:
                   # Trust the shared control plane without anyone handling a certificate.
                   "runai/runai-ca-cert": "runai/runai-ca-cert"
-                  # This tenant's registration facts, written by the registration above unless
-                  # `tenantSlug` names an existing one. Renamed on the way in, so the tenant Stack
-                  # needs no identity input and every tenant reads the same fixed name.
+                  # This Secret holds tenant registration facts.
+                  # `tenantSlug` selects an existing registration. Otherwise the template creates one.
+                  # The tenant Stack reads this fixed name.
                   "runai-backend/runai-tenant-facts-{{ if .Values.tenantSlug }}{{ .Values.tenantSlug }}{{ else }}{{ .Values.loft.virtualClusterName }}{{ end }}": "runai/runai-tenant-facts"
-                  # The JFrog credential the Control Plane Cluster already holds. Renamed because the
-                  # tenant Stack re-creates `runai-reg-creds` itself: the synced copy is read-only.
+                  # This is the JFrog credential from the Control Plane Cluster.
+                  # The tenant Stack creates `runai-reg-creds`. The synced Secret is read-only.
                   "runai/runai-reg-creds": "runai/runai-reg-creds-host"
           toHost:
             ingresses:

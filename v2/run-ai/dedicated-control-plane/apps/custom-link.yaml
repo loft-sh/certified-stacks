@@ -17,10 +17,10 @@ spec:
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
       {{- $projectNamespace := printf "p-%s" .Values.loft.project }}
-      # One retrying Job per VCI. It owns its space-namespace RBAC through Job ownerReferences, so
-      # TTL garbage collection removes the Job, ServiceAccount, Role, and RoleBinding after
-      # completion. Its project-namespace RBAC cannot be Job-owned, because an ownerReference only
-      # binds within one namespace; that Role owns its own RoleBinding and the Job deletes the Role.
+      # Each VCI has one retrying Job.
+      # Job ownerReferences remove its space-namespace RBAC after the Job completes.
+      # An ownerReference cannot cross namespaces.
+      # The project Role owns its RoleBinding. The Job deletes the Role after it patches the VCI.
       apiVersion: v1
       kind: ServiceAccount
       metadata:
@@ -71,8 +71,8 @@ spec:
         kind: Role
         name: {{ $helperName }}
       ---
-      # This Role and binding live beside the VCI in the project namespace. Its binding becomes a
-      # dependent of this Role, then the Job deletes the Role once it has patched its VCI.
+      # This Role and RoleBinding are in the VCI project namespace.
+      # The Role owns the RoleBinding. The Job deletes the Role after it patches the VCI.
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
       metadata:
@@ -174,9 +174,9 @@ spec:
                     value: runai-backend
                   - name: INGRESS_SELECTOR
                     value: app.kubernetes.io/part-of=control-plane
-                  # The control-plane Ingress host is the FQDN the Stack was given: this domain
-                  # when set, otherwise a derived nip.io name or, under the aws ingress provider,
-                  # the load balancer address. Empty accepts whichever one the Stack derived.
+                  # The control-plane Ingress host uses `domain` when set.
+                  # Otherwise, the Stack derives a nip.io name or uses the AWS load balancer address.
+                  # An empty value accepts the FQDN that the Stack derives.
                   - name: EXPECTED_HOST
                     value: "{{ .Values.domain }}"
                 command: ["sh", "-c"]

@@ -35,7 +35,7 @@ spec:
           secretKeys:
             adminPasswordKey: password
       # Chart consumers hard-code this name while PostgreSQL normally uses Helm release name.
-      # Keep name stable; vCluster translates it per tenant on host cluster.
+      # Keep name stable. VCluster translates it per tenant on host cluster.
       # Delete PostgreSQL PVC when you uninstall this release.
       # This prevents the next run from using old control-plane data.
       postgresql:

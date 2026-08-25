@@ -1,13 +1,13 @@
 # Create TLS Secrets in post-install hook.
 # Delete TLS Secrets in pre-delete hook.
 # Self-signed mode persists the CA in `runai-internal-ca` and reuses it across upgrades.
-# Do not remove that Secret from the teardown list; a stale CA outlives the release without it.
+# Do not remove that Secret from the teardown list. A stale CA outlives the release without it.
 apiVersion: storage.loft.sh/v1
 kind: App
 metadata:
-  # Central control-plane tenancy runs this on the Control Plane Cluster rather than inside a tenant, so it carries a
-  # different name and gains `hookImagePullSecret`. Under dedicated control-plane tenancy the Jobs are synced to the
-  # host and pull through vCluster's workload ServiceAccount instead.
+  # Central control-plane tenancy runs this App on the Control Plane Cluster.
+  # It uses a different name and adds `hookImagePullSecret`.
+  # Dedicated control-plane Jobs run in a tenant cluster and use its workload ServiceAccount.
   name: runai-step-04-bootstrap-host
   labels:
     runai.loft.sh/infra: "true"
@@ -145,7 +145,7 @@ spec:
                     cpu: 500m
                     memory: 256Mi
                 env:
-                  # kubectl writes a discovery cache under $HOME; the root filesystem is read-only.
+                  # kubectl writes a discovery cache under $HOME. The root filesystem is read-only.
                   - name: HOME
                     value: /tmp
                   - name: KUBECACHEDIR
@@ -243,7 +243,7 @@ spec:
       ADDITIONAL_DNS_NAME="{{ .Values.additionalDnsName | default "" }}"
       TLS_MODE="{{ .Values.tlsMode | default "self-signed" }}"
       USER_TLS_DIR=/var/run/runai-bootstrap/user-tls
-      # Reissue a leaf that expires inside this window rather than letting it lapse between upgrades.
+      # Reissue a leaf that expires inside this window instead of letting it lapse between upgrades.
       RENEW_BEFORE_SECONDS=2592000
 
       d="$(mktemp -d)"
@@ -424,7 +424,7 @@ spec:
       label: Hook image pull Secret
       # Secret must be in `runai` on Control Plane Cluster and pull Platform Job image.
       # Leave empty when nodes can pull image without credentials.
-      # Do not use runai-reg-creds. It authenticates to run:ai registry; Kubernetes matches pull
+      # Do not use runai-reg-creds. It authenticates to run:ai registry. Kubernetes matches pull
       # Secrets by registry host.
       description: Image pull Secret for hook Jobs.
       type: string

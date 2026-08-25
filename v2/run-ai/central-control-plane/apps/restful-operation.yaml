@@ -351,12 +351,12 @@ spec:
         echo "wrote output '$k'"
       done < /tmp/restful-op-outputs
       {{- end -}}
-  # The Platform allows a Stack to read task outputs only from namespaces its Apps actually
-  # deployed into, and it takes that from the Helm RELEASE namespace: for a templateRef task, the
-  # referenced App's defaultNamespace. The `namespace` parameter below moves the manifests but not
-  # the release, so leaving this as `default` makes every output declared over `runai-backend` fail
-  # with "which this stack has not deployed into". Dedicated control-plane tenancy hid that, because its `backend` task
-  # deploys the control plane into `runai-backend` and the allow-list is stack-wide.
+  # A Stack reads task outputs only from namespaces its Apps deploy into.
+  # For a templateRef task, Platform uses the referenced App's Helm release namespace.
+  # `namespace` moves manifests but does not move the release.
+  # Keep `defaultNamespace` as `runai-backend` for outputs in `runai-backend`.
+  # Otherwise Platform rejects the output because the Stack did not deploy into that namespace.
+  # Dedicated control-plane tenancy uses `runai-backend` for its `backend` task.
   defaultNamespace: runai-backend
   description: Performs an imperative REST call as a Helm hook and stores the response
     in a Secret, emulating the Terraform magodo/restful `operation` resource. Intended

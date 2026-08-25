@@ -1,11 +1,10 @@
-# Shared host foundation. Apply ONCE per Control Plane Cluster, before any tenant exists.
+# Apply this shared host foundation once per Control Plane Cluster, before you create tenants.
 #
-# The name MUST be `runai`: the control-plane chart requires the Helm release `runai-backend`, and
-# the release name is derived from `<StackInstance name>-<task name>`. Naming this `runai-host`
-# would silently produce `runai-host-backend` and break the chart.
+# Name this StackInstance `runai`. The control-plane chart requires release `runai-backend`.
+# The release name is `<StackInstance name>-<task name>`.
 #
-# Set `runaiRegistryCredentials`, `storageClass`, `hostIngressAddress`, and the admin credentials
-# before you apply. These administrator credentials live here and nowhere else.
+# Set `runaiRegistryCredentials`, `storageClass`, `hostIngressAddress`, and administrator credentials before you apply.
+# Tenant Stacks and tenant clusters do not receive administrator credentials.
 apiVersion: storage.loft.sh/v1
 kind: StackInstance
 metadata:
@@ -32,10 +31,10 @@ spec:
     # Optional. Name of a dockerconfigjson Secret you create in namespace `runai` on this cluster
     # BEFORE applying, able to pull the vCluster Platform image. The bootstrap Jobs run as that
     # image and run directly here, so nothing supplies them a credential automatically. Needed only
-    # when your Platform image comes from a private registry or an air-gapped mirror; check with:
+    # when your Platform image is from a private registry or an air-gapped mirror. Check with:
     #   kubectl -n vcluster-platform get pod -l app=loft \
     #     -o jsonpath='{.items[0].spec.containers[?(@.name=="manager")].image}'
-    # This is NOT the run:ai registry credential above: pull secrets match by registry host.
+    # This is not the run:ai registry credential above: pull secrets match by registry host.
     # hookImagePullSecret: platform-reg-creds
     # Optional. A real domain you control, instead of the derived nip.io name. Strongly recommended
     # in production: one nip.io name shared by every tenant can never carry a publicly trusted

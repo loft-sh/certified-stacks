@@ -1,33 +1,24 @@
 # Registers ONE central-control-plane tenant cluster with the shared run:ai control plane.
 #
-# Normally nobody applies this by hand. The tenant cluster template creates one StackInstance of this
-# template per tenant, named `runai-reg-<cluster name>`, as part of creating the cluster. Apply it
-# yourself only to pre-register a tenant, or to register one under a name that is not its cluster's;
-# then set `tenantSlug` on the cluster template so it uses this registration instead of making its
-# own. Name each hand-applied instance `runai-reg-<tenantSlug>`.
+# The tenant cluster template normally creates one registration per tenant.
+# It names the StackInstance `runai-reg-<cluster name>`.
+# Apply this template only to pre-register a tenant or use a different registration name.
+# Set the cluster template `tenantSlug` to that registration. Name it `runai-reg-<tenantSlug>`.
 #
-# This Stack takes no credentials as inputs. It runs in namespace `runai-backend`, where the host
-# Stack's `bootstrap` task already wrote `runai-control-plane-admin`, and `restful-operation` mounts
-# that Secret as files and merges it into the request body. The administrator password is therefore
-# supplied exactly once, to `run-ai-central-control-plane-host`, and read thereafter only from that Secret.
+# This Stack takes no credentials or control-plane FQDN as inputs.
+# The host Stack writes `runai-control-plane-admin` in `runai-backend`.
+# `restful-operation` reads that Secret as files for the request body.
+# The `discover` task reads the FQDN, ingress address, and CA setting from the endpoint ConfigMap.
 #
-# It takes no control-plane FQDN either. The host Stack published one in the
-# `runai/runai-control-plane-endpoint` ConfigMap, along with the ingress LoadBalancer address and
-# whether its CA must be trusted, and the `discover` task reads all three back. A restated FQDN can
-# only ever disagree with the one the control plane is actually served on.
+# The last task writes `runai-backend/runai-tenant-facts-<tenantSlug>`.
+# The tenant cluster template syncs this Secret with a fixed name. The tenant Stack reads its keys.
 #
-# The last task publishes `runai-backend/runai-tenant-facts-<tenantSlug>`. That Secret is the whole
-# interface to the tenant: the tenant cluster template syncs it in under a fixed name and the tenant
-# Stack reads its keys, so nobody copies a cluster UID or a client secret by hand.
+# Keep this StackInstance for the tenant lifetime.
+# Its pre-delete hook deregisters the tenant cluster. Its facts Secret supports tenant Stack upgrades.
+# Delete the tenant cluster before a hand-applied registration.
 #
-# KEEP THIS INSTANCE FOR THE TENANT'S WHOLE LIFETIME. Its pre-delete hook is what deregisters the
-# tenant's run:ai cluster, and its facts Secret is what the tenant Stack reads on every upgrade. An
-# instance the cluster template owns lives in that cluster's space and goes when the cluster does; a
-# hand-applied one is deleted by hand, after the tenant cluster.
-#
-# Every output Secret name is suffixed with `tenantSlug`. That is load-bearing: all registration
-# instances share namespace `runai-backend`, so fixed names would let one tenant's teardown read
-# another tenant's `uid` and issue DELETE /api/v1/clusters/<wrong uuid>?force=true.
+# Each output Secret name includes `tenantSlug`.
+# All registrations use `runai-backend`. Fixed names could expose another tenant's UID during deletion.
 apiVersion: storage.loft.sh/v1
 kind: StackTemplate
 metadata:
@@ -41,34 +32,31 @@ spec:
     publishes a single Secret holding everything that tenant's Stack needs. Deleting this instance
     deregisters only this tenant.
   inputs:
-    # Immutable tenant identity. Becomes the run:ai cluster name and the suffix of every Secret this
-    # instance owns. MUST be unique across the control plane: `clusterreg` matches an existing cluster
-    # by this name, so a duplicate makes two instances adopt the same run:ai cluster and lets either
-    # one deregister the other. The tenant cluster template passes its own cluster name here, which is
-    # what makes that uniqueness automatic; a hand-applied registration has to be pointed at with the
-    # template's `tenantSlug` parameter. No default, deliberately.
+    # This immutable tenant identity becomes the run:ai cluster name and Secret suffix.
+    # It must be unique. `clusterreg` matches an existing cluster by this name.
+    # Duplicate values let two registrations use and deregister the same run:ai cluster.
+    # The cluster template uses its cluster name. Set `tenantSlug` for a hand-applied registration.
+    # This input has no default.
     - { variable: tenantSlug, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    # Optional override for the domain this tenant's own run:ai cluster serves. Empty derives
-    # `<tenantSlug>.<host ingress address>.nip.io` from the address the host Stack published, which is
-    # the same address the tenant would have derived from. Nothing has to keep two values in step.
+    # Optional tenant cluster domain.
+    # An empty value derives `<tenantSlug>.<host ingress address>.nip.io` from the host Stack output.
+    # The tenant reads this same value from its facts Secret.
     - { variable: tenantClusterDomain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
     # Keep equal to `runaiVersion` on the host and tenant Stacks.
     - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86" }
     # Only drives `insecure`. Set to match the host Stack's tlsMode.
     - { variable: tlsMode, type: string, defaultValue: self-signed, validation: '^(self-signed|user-provided)$' }
-    # Name of an existing dockerconfigjson Secret in namespace `runai-backend` that can pull the
-    # vCluster Platform image. These hook Jobs run as that image directly on the Control Plane
-    # Cluster, so no vCluster workload ServiceAccount supplies a credential the way it does under
-    # dedicated control-plane tenancy. Leave empty when the Platform image comes from a registry the nodes can read.
-    # The host Stack takes the same input, but its Jobs run in `runai`, so the Secret is needed in
-    # both namespaces. This is NOT `runai-reg-creds`: pull secrets match by registry host.
+    # Name a `runai-backend` dockerconfigjson Secret that pulls the vCluster Platform image.
+    # Registration Jobs run on the Control Plane Cluster.
+    # Leave this empty when nodes can pull the image without credentials.
+    # The host Stack needs this Secret in `runai` too.
+    # Do not use `runai-reg-creds`. Pull secrets match the registry host.
     - { variable: hookImagePullSecret, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
 
   tasks:
 
-    # Reads what the host Stack published, so none of it is an input here. Also fails fast and by name
-    # when this Stack is applied before the host foundation exists, instead of every REST call
-    # resolving `https://` and timing out.
+    # Read the values published by the host Stack.
+    # This task names the missing ConfigMap when the host foundation is not ready.
     - name: discover
       taskTimeout: 6m
       app:
@@ -164,9 +152,9 @@ spec:
         - name: clientsecret
           fromSecret: { namespace: runai-backend, name: "runai-cluster-creds-{{ .Values.tenantSlug }}", key: clientsecret }
 
-    # The tenant's whole interface. `clusterDomain` repeats the expression `clusterreg` registered
-    # with, deliberately: one expression, evaluated twice from the same inputs and the same discovered
-    # address, cannot drift the way two hand-entered values did.
+    # This Secret is the tenant interface.
+    # `clusterDomain` uses the same inputs as `clusterreg`.
+    # The registered domain and tenant domain remain the same.
     - name: facts
       dependsOn: [discover, clusterreg, clustercreds]
       taskTimeout: 5m
@@ -180,8 +168,8 @@ spec:
           clientSecret: "{{ .Outputs.clustercreds.clientsecret }}"
           customCAEnabled: "{{ .Outputs.discover.customcaenabled }}"
 
-  # Nothing consumes these any more; the tenant reads the facts Secret instead. They stay because
-  # they are how an administrator confirms a registration without reading Secrets.
+  # The tenant reads the facts Secret instead of these outputs.
+  # Keep these outputs so an administrator can confirm registration without reading Secrets.
   publishedOutputs:
     - name: controlPlaneFqdn
       fromTask: { task: discover, output: controlplanefqdn }

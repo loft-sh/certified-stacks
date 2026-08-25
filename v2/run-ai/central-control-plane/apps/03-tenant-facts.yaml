@@ -1,16 +1,14 @@
 # Publishes everything ONE central-control-plane tenant needs, as a single Secret on the Control Plane Cluster.
 #
-# The tenant cluster template syncs this Secret into the tenant under a fixed name, and the tenant
-# Stack reads its keys as task outputs. That replaces four values an operator used to copy out of the
-# registration Stack's status and paste into the tenant cluster's parameters, and it means a rotated
-# client secret reaches the tenant on the next reconcile instead of going stale in a parameter.
+# The tenant cluster template syncs this Secret into the tenant with a fixed name.
+# The tenant Stack reads its keys as task outputs.
+# A client secret rotation reaches the tenant at the next reconcile.
 #
-# Owned by the registration Stack, so it lives and dies with that tenant's registration. Deleting the
-# registration therefore breaks later upgrades of that tenant's Stack, which is the documented
-# teardown order anyway: tenant cluster first, registration second.
+# The registration Stack owns this Secret.
+# Delete the tenant cluster before its registration Stack. Later tenant Stack upgrades need this Secret.
 #
-# The name is suffixed with the tenant slug because every registration instance shares namespace
-# `runai-backend`. A fixed name would let one tenant read another's cluster UID and client secret.
+# The Secret name includes the tenant slug.
+# Each registration uses namespace `runai-backend`. A fixed name could expose another tenant's UID and client secret.
 apiVersion: storage.loft.sh/v1
 kind: App
 metadata:

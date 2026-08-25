@@ -1,19 +1,14 @@
-# Applies the central-control-plane TENANT Stack directly, instead of letting the vCluster template own it through
-# `deploy.stacks`. Use this only when driving the tenant Stack by hand; otherwise prefer
-# `example/vcluster-template-with-runai-stack.yaml`.
+# This file deploys the tenant Stack without `deploy.stacks`.
+# Prefer `example/vcluster-template-with-runai-stack.yaml` for a cluster-template deployment.
 #
-# Destination is a tenant cluster, not the Control Plane Cluster. The shared host foundation
-# (`example/stackinstance-host.yaml`) and this tenant's registration
-# (`example/stackinstance-registration.yaml`) must both be in place first.
+# Apply this StackInstance to a tenant cluster, not the Control Plane Cluster.
+# Apply the host foundation and tenant registration first.
 #
-# There are no inputs to fill in, and that is the catch: this Stack reads everything from Secrets the
-# tenant cluster template syncs in. A tenant cluster created WITHOUT those three
-# `sync.fromHost.secrets.mappings` entries has nothing to read, and the `discover` task waits and then
-# fails naming the Secret that never arrived. Copy the mappings out of
-# `example/vcluster-template-with-runai-stack.yaml` before using this.
+# This Stack reads all values from synced Secrets. It has no inputs.
+# Copy the three `sync.fromHost.secrets.mappings` entries before you use this file.
+# `discover` fails when a required Secret does not arrive.
 #
-# Use StackInstance name `runai`: the cluster chart requires the Helm release `runai-cluster`, and the
-# release name is derived from `<StackInstance name>-<task name>`.
+# Name the StackInstance `runai`. The chart requires release `runai-cluster`.
 apiVersion: storage.loft.sh/v1
 kind: StackInstance
 metadata:

@@ -2,18 +2,16 @@
 #
 # Two callers, both central control-plane tenancy:
 #   - the tenant Stack, over Secrets the tenant cluster template syncs in from the Control Plane
-#     Cluster;
+#     Cluster.
 #   - the registration Stack, over the endpoint ConfigMap the host Stack wrote.
 #
-# The Platform allows a Stack to read task outputs only from namespaces its Apps deployed into, and
-# it takes that from the Helm RELEASE namespace, which for a templateRef task is the referenced App's
-# `defaultNamespace`. That is why the namespace here is fixed at `runai` instead of being a
-# parameter: a parameter would move the manifests without moving the allow-list entry, and every
-# output would fail to capture.
+# Platform allows task outputs only from namespaces that an App deploys into.
+# For a templateRef task, Platform uses the referenced App's release namespace.
+# This App must use `runai`. A parameter would move the manifests but not the output allow list.
 #
-# The wait is what makes an unsynced object a task failure instead of a silent one. Without it the
-# tenant Stack races the vCluster syncer, and a missing `runai-ca-cert` surfaces much later as TLS
-# errors from the run:ai agent.
+# The wait fails this task when an object does not arrive.
+# Without the wait, the tenant Stack can start before vCluster syncs `runai-ca-cert`.
+# The run:ai agent then reports a TLS error later.
 apiVersion: storage.loft.sh/v1
 kind: App
 metadata:
@@ -61,8 +59,8 @@ spec:
       done
       {{- end -}}
 
-      # Not a hook: the release has to own at least one object in `runai`, and recording what was
-      # awaited makes a stuck tenant readable with `kubectl get cm`.
+      # This is not a hook. The release must own an object in `runai`.
+      # This ConfigMap records awaited objects for `kubectl get cm` during a tenant failure.
       apiVersion: v1
       kind: ConfigMap
       metadata:
@@ -156,7 +154,7 @@ spec:
                     cpu: 500m
                     memory: 256Mi
                 env:
-                  # kubectl writes a discovery cache under $HOME; the root filesystem is read-only.
+                  # kubectl writes a discovery cache under $HOME. The root filesystem is read-only.
                   - name: HOME
                     value: /tmp
                   - name: KUBECACHEDIR

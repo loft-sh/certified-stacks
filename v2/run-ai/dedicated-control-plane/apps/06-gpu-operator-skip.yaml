@@ -1,24 +1,20 @@
-# The `gpuProvider: gke` half of step 6. Selected by the gpu task's templated `templateRef.name`,
-# not by a parameter read in here: a StackTemplate task cannot be skipped, but every string in a
-# task is rendered, so pointing the task at this App is how the GPU Operator gets skipped.
+# This App is step 6 for `gpuProvider: gke`.
+# The `gpu` task selects this App through `templateRef.name`.
+# A StackTemplate task cannot be skipped. This App skips the GPU Operator.
 #
-# Installs no GPU Operator. On a GKE GPU node pool Google already owns the whole node-level GPU
-# stack: it installs and manages the driver, configures containerd, and runs its own
-# `nvidia-gpu-device-plugin` in kube-system, and its node agent reconciles that configuration back.
-# Running NVIDIA's GPU Operator alongside it does not add capability, it fails:
+# GKE manages the GPU stack on its default GPU node pools.
+# GKE installs the driver, configures containerd, and runs `nvidia-gpu-device-plugin` in `kube-system`.
+# Do not run NVIDIA GPU Operator with this GKE stack.
 #
-#   - container-toolkit's driver-validation never finds a driver, because the operator looks in
-#     /run/nvidia/driver while GKE's lives in /home/kubernetes/bin/nvidia
-#   - the operator stamps `runtimeClassName: nvidia` on every GPU-touching operand, and GKE's
-#     containerd has no `nvidia` handler, so those pods never get a sandbox:
-#     "no runtime for \"nvidia\" is configured"
-#   - its device plugin contends with Google's for the same GPUs
+# The operator searches `/run/nvidia/driver`, but GKE stores its driver in `/home/kubernetes/bin/nvidia`.
+# GKE containerd has no `nvidia` handler. GPU Operator pods cannot start.
+# The two device plugins also contend for the same GPUs.
 #
-# Take GPU capacity and metrics from GKE's own stack instead.
+# Use GPU capacity and metrics from the GKE stack.
 #
-# This is for GKE's default COS pools with Google-managed drivers. A GKE Ubuntu pool created with
-# gpu-driver-version=disabled is NVIDIA's supported GPU Operator path: use `gpuProvider: standard`
-# there, which is also what the system-critical pod quota in step 0 exists for.
+# Use this App for default COS pools with Google-managed drivers.
+# For a GKE Ubuntu pool with `gpu-driver-version=disabled`, use `gpuProvider: standard`.
+# Step 0 creates the required system-critical pod quota for that configuration.
 apiVersion: storage.loft.sh/v1
 kind: App
 metadata:
@@ -30,9 +26,9 @@ spec:
   description: Installs no GPU Operator. Used when the cloud provider manages the node-level GPU stack.
   defaultNamespace: gpu-operator
   config:
-    # A marker rather than an empty release, so `kubectl -n gpu-operator get cm` answers "where is
+    # A marker instead of an empty release, so `kubectl -n gpu-operator get cm` answers "where is
     # my GPU Operator" without anyone reading the Stack. The task's parameters are declared below
-    # and deliberately unused; the gpu task passes the same set to either App.
+    # and deliberately unused. The gpu task passes the same set to either App.
     manifests: |-
       apiVersion: v1
       kind: ConfigMap

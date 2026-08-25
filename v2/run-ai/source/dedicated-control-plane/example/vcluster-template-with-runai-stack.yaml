@@ -1,5 +1,5 @@
-# Creates a tenant vCluster and an owned Run:ai StackInstance in that tenant.
-# Apply StackTemplate and App manifests before this template.
+# This template creates a tenant vCluster and its Run:ai StackInstance.
+# Apply the StackTemplate and App manifests before you apply this template.
 apiVersion: storage.loft.sh/v1
 kind: VirtualClusterTemplate
 metadata:
@@ -61,8 +61,8 @@ spec:
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
 
     - variable: domain
-      # DNS for this domain and its wildcard record must resolve to ingress-nginx LoadBalancer IP.
-      # Empty derives <tenant>.<lb-ip>.nip.io after LoadBalancer IP is assigned.
+      # DNS for this domain and its wildcard record must resolve to the ingress-nginx LoadBalancer IP.
+      # An empty value derives `<tenant>.<lb-ip>.nip.io` after the LoadBalancer IP is assigned.
       description: Control-plane domain.
       type: string
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
@@ -73,9 +73,9 @@ spec:
       type: boolean
       defaultValue: "true"
   template:
-    # The custom-link Job lives in an App, not in `spaceTemplate.objects`. Only the App path
-    # renders through the Platform's synthetic chart, which is what supplies `.Values.__image__`;
-    # `objects` is applied as already-rendered YAML and would need the image hardcoded.
+    # The custom-link Job is an App, not a `spaceTemplate.objects` object.
+    # Platform renders Apps with its synthetic chart. This provides `.Values.__image__`.
+    # `objects` receives rendered YAML and would need a fixed image.
     spaceTemplate:
       apps:
         - name: runai-custom-link
@@ -117,5 +117,5 @@ spec:
                 ingressProvider: {{ .Values.ingressProvider }}
                 # Empty keeps the derived nip.io FQDN.
                 domain: "{{ .Values.domain }}"
-                # TLS defaults to a self-signed certificate. See README section "TLS" for how to
-                # supply a trusted one; add tlsMode/userTls* here and as template parameters above.
+                # TLS uses a self-signed certificate by default.
+                # For a trusted certificate, add `tlsMode` and `userTls*` parameters. See README TLS.
