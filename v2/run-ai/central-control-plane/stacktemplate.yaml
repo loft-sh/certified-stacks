@@ -26,19 +26,21 @@ metadata:
   labels:
     vcluster.com/certified: "true"
 spec:
-  displayName: "run:ai central-control-plane tenant (shared control plane and GPU Operator)"
+  displayName: "NVIDIA Run:ai central-control-plane tenant (shared control plane and GPU Operator)"
   description: >-
-    run:ai cluster components for one central-control-plane tenant. Consumes a control plane and an NVIDIA GPU
+    NVIDIA Run:ai cluster components for one central-control-plane tenant. Consumes a control plane and an NVIDIA GPU
     Operator that already exist on the Control Plane Cluster, plus a cluster registration performed
-    by an administrator. Installs registry credentials, the Prometheus operator, and the run:ai
+    by an administrator. Installs registry credentials, the Prometheus operator, and the NVIDIA Run:ai
     cluster agent, taking every value from Secrets synced in from the host.
   parameters:
-    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Ingress class" }
     # Wait for the control-plane CA Secret.
     # Set false only for a publicly trusted certificate. The host Stack creates no CA Secret then.
-    # Keep this value equal to the host Stack's `customCAEnabled`.
+    # This must equal the host Stack's `customCAEnabled`. It cannot be derived: it decides what
+    # `discover` waits for, and the host's value only arrives in the facts Secret that `discover` is
+    # waiting on. So `discover` checks it against that Secret first and fails naming both values.
     # The facts Secret controls the CA mount.
-    - { variable: requireControlPlaneCA, type: boolean, defaultValue: "true" }
+    - { variable: requireControlPlaneCA, type: boolean, defaultValue: "true", label: "Require control plane CA" }
 
   tasks:
 
@@ -53,6 +55,9 @@ spec:
         parameters:
           awaitSecrets: "runai-tenant-facts,runai-reg-creds-host{{ if .Values.requireControlPlaneCA }},runai-ca-cert{{ end }}"
           awaitTimeoutSeconds: "600"
+          assertSecret: runai-tenant-facts
+          assertSecretKey: customcaenabled
+          assertSecretValue: "{{ .Values.requireControlPlaneCA }}"
       outputs:
         - name: controlplanefqdn
           fromSecret: { namespace: runai, name: runai-tenant-facts, key: fqdn }
@@ -67,7 +72,7 @@ spec:
         - name: dockerconfigjson
           fromSecret: { namespace: runai, name: runai-reg-creds-host, key: .dockerconfigjson }
 
-    # Re-creates the pull Secret as a release resource under the name the run:ai charts default to.
+    # Re-creates the pull Secret as a release resource under the name the NVIDIA Run:ai charts default to.
     # The synced copy cannot be used directly: it is owned by the syncer and read-only in the tenant.
     - name: registry
       dependsOn: [discover]
@@ -80,7 +85,7 @@ spec:
           # No control plane lives here, so no `runai-backend` copy and no empty namespace left over.
           copyToControlPlaneNamespace: "false"
 
-    # CRDs and operator only. The run:ai operator creates this tenant's own Prometheus instance from
+    # CRDs and operator only. The NVIDIA Run:ai operator creates this tenant's own Prometheus instance from
     # RunaiConfig at runtime, which is why the CRDs must exist in the tenant's own API server.
     - name: prometheus
       timeout: 15m

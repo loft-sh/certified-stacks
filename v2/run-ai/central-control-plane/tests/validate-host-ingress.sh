@@ -32,11 +32,20 @@ else
 fi
 
 lb_ips=$(kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}' 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | sort -u)
+# AWS publishes an ELB/NLB hostname and never an address. That is `ingressProvider: aws`, where the
+# FQDN is the hostname itself and every tenant must set its own `tenantClusterDomain`, because
+# `nip.io` has no address to wrap.
+lb_hosts=$(kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.status.loadBalancer.ingress[0].hostname}{"\n"}{end}' 2>/dev/null | grep -E '^[a-zA-Z0-9]' | sort -u)
 if [ -n "$lb_ips" ]; then
-  pass "LoadBalancer IPv4 address(es) available for hostIngressAddress:"
+  pass "LoadBalancer IPv4 address(es) available for hostIngressAddress (ingressProvider: standard):"
   printf '       %s\n' $lb_ips
+elif [ -n "$lb_hosts" ]; then
+  pass "LoadBalancer hostname(s) available for hostIngressAddress (ingressProvider: aws):"
+  printf '       %s\n' $lb_hosts
+  echo "       Set ingressProvider: aws on the host Stack, and tenantClusterDomain on every tenant:"
+  echo "       a nip.io name cannot be derived from a hostname."
 else
-  fail "no LoadBalancer Service with an IPv4 address; hostIngressAddress has nothing to point at"
+  fail "no LoadBalancer Service with an address or a hostname; hostIngressAddress has nothing to point at"
 fi
 
 # --- GPU stack -----------------------------------------------------------------------------------
@@ -44,7 +53,7 @@ fi
 if kubectl get runtimeclass nvidia >/dev/null 2>&1; then
   pass "RuntimeClass nvidia exists (tenants sync it in via sync.fromHost.runtimeClasses)"
 else
-  fail "RuntimeClass nvidia not found; run:ai GPU workloads select it by name"
+  fail "RuntimeClass nvidia not found; NVIDIA Run:ai GPU workloads select it by name"
 fi
 
 if kubectl get ns "$GPU_NS" >/dev/null 2>&1; then

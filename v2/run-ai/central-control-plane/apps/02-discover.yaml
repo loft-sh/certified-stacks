@@ -11,7 +11,7 @@
 #
 # The wait fails this task when an object does not arrive.
 # Without the wait, the tenant Stack can start before vCluster syncs `runai-ca-cert`.
-# The run:ai agent then reports a TLS error later.
+# The NVIDIA Run:ai agent then reports a TLS error later.
 apiVersion: storage.loft.sh/v1
 kind: App
 metadata:
@@ -19,7 +19,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 2] Discover (await external objects)'
+  displayName: '[NVIDIA Run:ai Step - 2] Discover (await external objects)'
   description: >-
     Blocks until the named Secrets and ConfigMaps exist in namespace `runai`, so later tasks can read
     values out of objects written by another Stack or synced in from the Control Plane Cluster.
@@ -49,6 +49,26 @@ spec:
         done
         echo "found ${kind}/${name}"
       }
+
+      # Compare one key of a Secret against what the caller was configured with, before waiting on
+      # anything that depends on the two agreeing. The tenant Stack uses this for the control-plane
+      # CA: its `requireControlPlaneCA` must equal the host's `customCAEnabled`, which reaches the
+      # tenant only inside the facts Secret. Disagreement either makes the wait below unsatisfiable
+      # or, in the other direction, lets the NVIDIA Run:ai agent start with no CA to trust.
+      if [ -n "${ASSERT_SECRET:-}" ]; then
+        wait_for secret "$ASSERT_SECRET"
+        actual="$(kubectl -n runai get secret "$ASSERT_SECRET" -o "jsonpath={.data.${ASSERT_KEY}}" 2>/dev/null | base64 -d 2>/dev/null || true)"
+        if [ "$actual" != "$ASSERT_VALUE" ]; then
+          echo "${ASSERT_SECRET}.${ASSERT_KEY} is '${actual}' but this Stack was configured for '${ASSERT_VALUE}'" >&2
+          echo "these must agree. '${ASSERT_KEY}' is written by the shared control plane, so change" >&2
+          echo "this Stack to match it, not the other way round: set requireControlPlaneCA to" >&2
+          echo "'${actual}' on this tenant Stack. Setting it true against a publicly trusted" >&2
+          echo "control plane waits for a CA Secret that is never created; setting it false against" >&2
+          echo "a custom CA starts the NVIDIA Run:ai agent with nothing to trust." >&2
+          exit 1
+        fi
+        echo "${ASSERT_SECRET}.${ASSERT_KEY} agrees with this Stack ('${actual}')"
+      fi
 
       # Unquoted on purpose: word splitting is how the comma-separated inputs become arguments.
       for name in $(echo "${AWAIT_SECRETS}" | tr ',' ' '); do
@@ -165,6 +185,12 @@ spec:
                     value: {{ .Values.awaitConfigMaps | default "" | quote }}
                   - name: AWAIT_TIMEOUT_SECONDS
                     value: {{ .Values.awaitTimeoutSeconds | default "300" | quote }}
+                  - name: ASSERT_SECRET
+                    value: {{ .Values.assertSecret | default "" | quote }}
+                  - name: ASSERT_KEY
+                    value: {{ .Values.assertSecretKey | default "" | quote }}
+                  - name: ASSERT_VALUE
+                    value: {{ .Values.assertSecretValue | default "" | quote }}
                 command: ["sh", "-c"]
                 args:
                   - |
@@ -190,10 +216,24 @@ spec:
       description: Task wait limit in seconds.
       type: string
       defaultValue: "300"
+    - variable: assertSecret
+      label: Secret to check a key in
+      # Empty disables the check, which is how the registration Stack uses this App.
+      description: Secret in `runai` whose key must match `assertSecretValue` before the wait begins.
+      type: string
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    - variable: assertSecretKey
+      label: Key to check
+      description: Key within `assertSecret`.
+      type: string
+    - variable: assertSecretValue
+      label: Expected value
+      description: Value the caller was configured with; the task fails when the Secret disagrees.
+      type: string
     - variable: hookImagePullSecret
       label: Hook image pull secret
       # Secret must be in `runai` and pull vCluster Platform image. Needed only on Control Plane
       # Cluster. Tenant cluster Jobs sync to host and use vCluster workload ServiceAccount.
-      description: Image pull Secret for hook Job.
+      description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
       type: string
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'

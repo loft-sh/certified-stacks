@@ -5,7 +5,7 @@ kind: StackInstance
 metadata:
   name: runai
 spec:
-  displayName: "run:ai self-hosted (full infra, nip.io)"
+  displayName: "NVIDIA Run:ai self-hosted (full infra, nip.io)"
   owner:
     user: admin
   destination:

@@ -84,9 +84,25 @@ spec:
               - name: {{ .Values.hookImagePullSecret | quote }}
       {{- end }}
             restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
             containers:
               - name: restful-op
                 image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
                 env:
                   - name: MODE
                     value: "create"
@@ -129,12 +145,18 @@ spec:
                 args:
                   - |
       {{ include "restful-op.script" . | indent 14 }}
-      {{- if .Values.bodySecret }}
                 volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+      {{- if .Values.bodySecret }}
                   - name: body-secret
                     mountPath: /var/run/restful-op/body-secret
                     readOnly: true
+      {{- end }}
             volumes:
+              - name: tmp
+                emptyDir: {}
+      {{- if .Values.bodySecret }}
               - name: body-secret
                 secret:
                   secretName: {{ .Values.bodySecret | quote }}
@@ -159,9 +181,25 @@ spec:
               - name: {{ .Values.hookImagePullSecret | quote }}
       {{- end }}
             restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
             containers:
               - name: restful-op
                 image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
                 env:
                   - name: MODE
                     value: "delete"
@@ -192,19 +230,25 @@ spec:
                 args:
                   - |
       {{ include "restful-op.script" . | indent 14 }}
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
 
       {{- define "restful-op.script" -}}
       set -eu
 
-      # Install `curl` and `jq` if image does not contain them.
-      # Stop if either command is unavailable.
-      if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-        apk add --no-cache curl jq >/dev/null 2>&1 || true
-      fi
-      if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-        echo "curl and jq are required in the hook image; set the App 'image' parameter to one that provides them" >&2
-        exit 1
-      fi
+      # This container is non-root with a read-only root filesystem, so it cannot install anything.
+      # Require the tools in the image, as the bootstrap and custom-link Apps do.
+      for t in curl jq; do
+        command -v "$t" >/dev/null || { echo "missing $t; set the App 'image' parameter to an image that provides it" >&2; exit 1; }
+      done
+
+      # mktemp and the field/output scratch files below write here. /tmp is an emptyDir.
+      TMPDIR=/tmp
+      export TMPDIR
 
       API="https://kubernetes.default.svc"
       SA=/var/run/secrets/kubernetes.io/serviceaccount
@@ -215,9 +259,24 @@ spec:
       INSECURE_FLAG=""
       [ "${INSECURE}" = "true" ] && INSECURE_FLAG="-k"
 
-      AUTH_HEADER=""
+      # Nothing secret goes on a curl argv. /proc/<pid>/cmdline is readable by anything sharing
+      # this container's PID namespace, and `ps` inside the container shows the whole line, so
+      # Authorization headers live in curl `--config` files and request bodies are passed as
+      # `--data @file`. Only file paths and URLs remain visible. This is a narrower exposure than
+      # the App parameters and container args the note on the request body below is about, but the
+      # values are the same ones, so keep them out of both.
+      umask 077
+
+      # Service-account token for the in-cluster API, used by the secret helpers.
+      K8S_CFG="$TMPDIR/k8s.conf"
+      printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$K8S_CFG"
+
+      # Bearer token for the remote API, when a credentialsSecret supplied one. An empty config
+      # file is valid, so the flag is unconditional and the call sites stay uniform.
+      API_CFG="$TMPDIR/api.conf"
+      : > "$API_CFG"
       if [ -n "${AUTHORIZATION:-}" ]; then
-        AUTH_HEADER="Authorization: ${AUTHORIZATION}"
+        printf 'header = "Authorization: %s"\n' "${AUTHORIZATION}" > "$API_CFG"
       fi
 
       # Retry curl for connection failures and HTTP 5xx responses.
@@ -228,12 +287,15 @@ spec:
           attempt=$((attempt+1))
           body_file="$(mktemp)"
           if [ -n "$data" ]; then
-            code="$(curl -sS $INSECURE_FLAG -o "$body_file" -w '%{http_code}' \
-              -X "$method" -H 'Content-Type: application/json' ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-              --data "$data" "$url" || echo 000)"
+            data_file="$(mktemp)"
+            printf '%s' "$data" > "$data_file"
+            code="$(curl -sS $INSECURE_FLAG -K "$API_CFG" -o "$body_file" -w '%{http_code}' \
+              -X "$method" -H 'Content-Type: application/json' \
+              --data @"$data_file" "$url" || echo 000)"
+            rm -f "$data_file"
           else
-            code="$(curl -sS $INSECURE_FLAG -o "$body_file" -w '%{http_code}' \
-              -X "$method" ${AUTH_HEADER:+-H "$AUTH_HEADER"} "$url" || echo 000)"
+            code="$(curl -sS $INSECURE_FLAG -K "$API_CFG" -o "$body_file" -w '%{http_code}' \
+              -X "$method" "$url" || echo 000)"
           fi
           HTTP_BODY="$(cat "$body_file")"; rm -f "$body_file"
           if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
@@ -253,10 +315,13 @@ spec:
       patch_secret_key() {
         key="$1"; val="$2"
         b64="$(printf '%s' "$val" | base64 | tr -d '\n')"
-        code="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" -H "Authorization: Bearer $TOKEN" \
+        patch_file="$(mktemp)"
+        printf '{"data":{"%s":"%s"}}' "$key" "$b64" > "$patch_file"
+        code="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" -K "$K8S_CFG" \
           -H 'Content-Type: application/merge-patch+json' -X PATCH \
           "$API/api/v1/namespaces/$NS/secrets/$OUTPUT_SECRET" \
-          --data "{\"data\":{\"$key\":\"$b64\"}}")"
+          --data @"$patch_file")"
+        rm -f "$patch_file"
         if [ "$code" -ge 300 ]; then
           echo "failed to patch key '$key' into secret $OUTPUT_SECRET: HTTP $code" >&2
           return 1
@@ -266,7 +331,7 @@ spec:
       get_secret_key() {
         key="$1"
         url="$API/api/v1/namespaces/$NS/secrets/$OUTPUT_SECRET"
-        curl -sS --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$url" \
+        curl -sS --cacert "$CA" -K "$K8S_CFG" "$url" \
           | jq -r ".data[\"$key\"] // empty" | base64 -d 2>/dev/null || true
       }
 
@@ -278,15 +343,36 @@ spec:
           [ -z "$id" ] && { echo "no id found in secret for teardown, treating as already gone"; exit 0; }
           path="$(printf '%s' "$path" | sed "s#{id}#$id#g")"
         fi
+        # Never block the delete: a failure here would wedge the StackInstance and leave the
+        # tenant undeletable. Report accurately instead. `http` only returns non-zero for a
+        # connection failure or a 5xx that outlived the retries, so a 4xx arrives here as success
+        # with HTTP_CODE set -- an expired token used to print like a clean teardown.
         if http "${METHOD}" "${BASE_URL}${path}"; then
-          echo "teardown ${METHOD} ${path} -> ${HTTP_CODE}"
+          case "${HTTP_CODE}" in
+            404|410)
+              echo "teardown ${METHOD} ${path} -> ${HTTP_CODE}, already gone"
+              ;;
+            2*|3*)
+              echo "teardown ${METHOD} ${path} -> ${HTTP_CODE}"
+              ;;
+            *)
+              echo "WARNING: teardown ${METHOD} ${path} -> ${HTTP_CODE}: ${HTTP_BODY}" >&2
+              echo "WARNING: the remote resource was NOT deleted and is now orphaned." >&2
+              echo "WARNING: remove it by hand before reusing this name." >&2
+              ;;
+          esac
+        else
+          echo "WARNING: teardown ${METHOD} ${path} did not complete." >&2
+          echo "WARNING: the remote resource may be orphaned; check it before reusing this name." >&2
         fi
-        # Continue delete when resource does not exist or delete fails.
+        # Continue the delete regardless, so the release can always be removed.
         exit 0
       fi
 
       # Read sensitive body fields from mounted Secret files.
-      # Do not pass credentials as parameters or command arguments.
+      # Do not pass credentials as App parameters, where they persist in the StackInstance spec
+      # and reach task outputs, nor as container args, where `get pod` shows them. The curl calls
+      # above keep them off the process argv as well; see the note next to the config files.
       BODY_JSON="${BODY}"
       if [ -n "${BODY_SECRET_FIELDS:-}" ]; then
         [ -z "$BODY_JSON" ] && BODY_JSON='{}'
@@ -360,7 +446,7 @@ spec:
   defaultNamespace: runai-backend
   description: Performs an imperative REST call as a Helm hook and stores the response
     in a Secret, emulating the Terraform magodo/restful `operation` resource. Intended
-    as a Stack step that hands API output (e.g. run:ai cluster credentials) to later
+    as a Stack step that hands API output (e.g. NVIDIA Run:ai cluster credentials) to later
     steps.
   displayName: REST Operation
   icon: https://raw.githubusercontent.com/kubernetes/community/master/icons/png/resources/labeled/secret-128.png
@@ -463,8 +549,7 @@ spec:
     label: Retry delay (s)
     type: number
     variable: retryDelay
-  - description: (Optional) If an imagePullSecret is required to pull the image used for the AppInstance
-      specify it's name here.  Otherwise, you can ignore.
+  - description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
     label: Hook image pull Secret
     type: string
     variable: hookImagePullSecret

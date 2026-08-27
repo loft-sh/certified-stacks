@@ -1,12 +1,12 @@
-# run:ai Dedicated Control-Plane Stack
+# NVIDIA Run:ai Dedicated Control-Plane Stack
 
-This Stack installs a self-hosted run:ai control plane and cluster components.
+This Stack installs a self-hosted NVIDIA Run:ai control plane and cluster components.
 
 It installs registry credentials, ingress-nginx, TLS, Prometheus, GPU support, control-plane services,
 and cluster registration.
 
 The Stack derives a control-plane FQDN from the LoadBalancer IP address with `nip.io`.
-Set `domain` to use a domain you control. See [Configure inputs](#configure-inputs).
+Set `domain` to use a domain you control. See [Configure parameters](#configure-parameters).
 
 ## Requirements
 
@@ -53,7 +53,7 @@ Use an existing Secret in the `runai` namespace with keys `tls.crt`, `tls.key`, 
 `ca.crt`. Prefer this method. It keeps private keys out of the StackInstance.
 
 ```yaml
-inputs:
+parameters:
   tlsMode: user-provided
   userTlsSecretName: my-runai-tls
 ```
@@ -62,7 +62,7 @@ Supply PEM inline when no Secret can exist before the Stack runs. This Stack cre
 cluster. Inline PEM is usually the only option:
 
 ```yaml
-inputs:
+parameters:
   tlsMode: user-provided
   userTlsCert: |
     -----BEGIN CERTIFICATE-----
@@ -75,15 +75,15 @@ inputs:
 Omit `userCaCert` when the chain is publicly trusted, and set:
 
 ```yaml
-inputs:
+parameters:
   customCAEnabled: "false"
 ```
 
 `customCAEnabled` controls `global.customCA.enabled` in the control-plane and cluster charts.
 REST registration skips verification only during documented self-signed bootstrap.
 
-A `nip.io` FQDN cannot get a publicly trusted certificate. Set the `domain` input to a domain you
-control (see [Configure inputs](#configure-inputs)) before you supply one.
+A `nip.io` FQDN cannot get a publicly trusted certificate. Set the `domain` parameter to a domain you
+control (see [Configure parameters](#configure-parameters)) before you supply one.
 
 ### Verify
 
@@ -110,16 +110,16 @@ Steps `authtoken`, `clusterreg`, and `clustercreds` use `restful-operation`.
 
 This repository provides this App in `apps/restful-operation.yaml`.
 
-## Configure inputs
+## Configure parameters
 
 Set `runaiRegistryCredentials` and `storageClass` before you apply StackInstance.
 
 `storageClass` has no default. Set it to a storage class on target cluster.
 
-Example inputs:
+Example parameters:
 
 ```yaml
-inputs:
+parameters:
   tenant: runai
   runaiRegistryCredentials: "<JFROG_TOKEN>"
   storageClass: "<STORAGE_CLASS>"
@@ -133,7 +133,7 @@ When set, the Stack uses this FQDN for TLS SANs, `global.domain`, the API base U
 and cluster chart URLs.
 
 ```yaml
-inputs:
+parameters:
   domain: runai.example.com
 ```
 

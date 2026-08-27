@@ -1,11 +1,11 @@
-# Registers ONE central-control-plane tenant cluster with the shared run:ai control plane.
+# Registers ONE central-control-plane tenant cluster with the shared NVIDIA Run:ai control plane.
 #
 # The tenant cluster template normally creates one registration per tenant.
 # It names the StackInstance `runai-reg-<cluster name>`.
 # Apply this template only to pre-register a tenant or use a different registration name.
 # Set the cluster template `tenantSlug` to that registration. Name it `runai-reg-<tenantSlug>`.
 #
-# This Stack takes no credentials or control-plane FQDN as inputs.
+# This Stack takes no credentials or control-plane FQDN as parameters.
 # The host Stack writes `runai-control-plane-admin` in `runai-backend`.
 # `restful-operation` reads that Secret as files for the request body.
 # The `discover` task reads the FQDN, ingress address, and CA setting from the endpoint ConfigMap.
@@ -26,32 +26,45 @@ metadata:
   labels:
     vcluster.com/certified: "true"
 spec:
-  displayName: "run:ai central-control-plane tenant registration"
+  displayName: "NVIDIA Run:ai central-control-plane tenant registration"
   description: >-
-    Administrator-only. Registers one tenant cluster against the shared run:ai control plane and
+    Administrator-only. Registers one tenant cluster against the shared NVIDIA Run:ai control plane and
     publishes a single Secret holding everything that tenant's Stack needs. Deleting this instance
     deregisters only this tenant.
   parameters:
-    # This immutable tenant identity becomes the run:ai cluster name and Secret suffix.
+    # This immutable tenant identity becomes the NVIDIA Run:ai cluster name and Secret suffix.
     # It must be unique. `clusterreg` matches an existing cluster by this name.
-    # Duplicate values let two registrations use and deregister the same run:ai cluster.
+    # Duplicate values let two registrations use and deregister the same NVIDIA Run:ai cluster.
     # The cluster template uses its cluster name. Set `tenantSlug` for a hand-applied registration.
     # This input has no default.
-    - { variable: tenantSlug, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    - { variable: tenantSlug, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Tenant registration name" }
     # Optional tenant cluster domain.
     # An empty value derives `<tenantSlug>.<host ingress address>.nip.io` from the host Stack output.
     # The tenant reads this same value from its facts Secret.
-    - { variable: tenantClusterDomain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
-    # Keep equal to `runaiVersion` on the host and tenant Stacks.
-    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86" }
-    # Only drives `insecure`. Set to match the host Stack's tlsMode.
-    - { variable: tlsMode, type: string, defaultValue: self-signed, validation: '^(self-signed|user-provided)$' }
+    # REQUIRED when the host Stack uses `ingressProvider: aws`: the host address is then a
+    # LoadBalancer hostname, `nip.io` cannot wrap it, and nothing is derived. Leaving it empty fails
+    # the `clusterDomain` validation on the tenant-facts App rather than registering a bogus domain.
+    - { variable: tenantClusterDomain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Tenant cluster domain" }
+    # This chooses template-time tenant-domain derivation. Host endpoint values drive runtime tasks.
+    - variable: ingressProvider
+      label: "Ingress provider"
+      type: string
+      required: true
+      defaultValue: standard
+      options:
+        - standard
+        - aws
+    # Keep equal to the chart versions in `apps/07-control-plane.yaml` and `apps/08-cluster.yaml`.
+    # This only feeds the `cluster-install-info?version=` query below; a chart version cannot be
+    # templated. `test-certified-manifests.sh` fails when the two disagree. Neither the host Stack
+    # nor the tenant Stack takes this value.
+    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86", label: "NVIDIA Run:ai version" }
     # Name a `runai-backend` dockerconfigjson Secret that pulls the vCluster Platform image.
     # Registration Jobs run on the Control Plane Cluster.
     # Leave this empty when nodes can pull the image without credentials.
     # The host Stack needs this Secret in `runai` too.
     # Do not use `runai-reg-creds`. Pull secrets match the registry host.
-    - { variable: hookImagePullSecret, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
+    - { variable: hookImagePullSecret, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Hook image pull Secret", description: "If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank." }
 
   tasks:
 
@@ -79,6 +92,13 @@ spec:
             namespace: runai
             name: runai-control-plane-endpoint
             jsonPath: "{.data.loadBalancerAddress}"
+        - name: tlsinsecure
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: runai
+            name: runai-control-plane-endpoint
+            jsonPath: "{.data.tlsInsecure}"
         - name: customcaenabled
           fromResource:
             apiVersion: v1
@@ -98,7 +118,7 @@ spec:
           namespace: runai-backend
           hookImagePullSecret: "{{ .Values.hookImagePullSecret }}"
           baseURL: "https://{{ .Outputs.discover.controlplanefqdn }}"
-          insecure: '{{ eq .Values.tlsMode "self-signed" }}'
+          insecure: "{{ .Outputs.discover.tlsinsecure }}"
           createPath: /api/v1/token
           body: '{"grantType":"password"}'
           bodySecret: runai-control-plane-admin
@@ -117,9 +137,9 @@ spec:
           namespace: runai-backend
           hookImagePullSecret: "{{ .Values.hookImagePullSecret }}"
           baseURL: "https://{{ .Outputs.discover.controlplanefqdn }}"
-          insecure: '{{ eq .Values.tlsMode "self-signed" }}'
+          insecure: "{{ .Outputs.discover.tlsinsecure }}"
           createPath: /api/v1/clusters
-          body: '{"name":"{{ .Values.tenantSlug }}","domain":"{{ if .Values.tenantClusterDomain }}{{ .Values.tenantClusterDomain }}{{ else }}{{ .Values.tenantSlug }}.{{ .Outputs.discover.hostingressaddress }}.nip.io{{ end }}"}'
+          body: '{"name":"{{ .Values.tenantSlug }}","domain":"{{ if .Values.tenantClusterDomain }}{{ .Values.tenantClusterDomain }}{{ else if eq .Values.ingressProvider "aws" }}{{ else }}{{ .Values.tenantSlug }}.{{ .Outputs.discover.hostingressaddress }}.nip.io{{ end }}"}'
           # Use `readPath` and `readFilter` to find an existing cluster before POST.
           readPath: /api/v1/clusters
           readFilter: '(if type=="array" then . else (.clusters // .items // []) end) | map(select(.name=="{{ .Values.tenantSlug }}")) | first'
@@ -142,7 +162,7 @@ spec:
           namespace: runai-backend
           hookImagePullSecret: "{{ .Values.hookImagePullSecret }}"
           baseURL: "https://{{ .Outputs.discover.controlplanefqdn }}"
-          insecure: '{{ eq .Values.tlsMode "self-signed" }}'
+          insecure: "{{ .Outputs.discover.tlsinsecure }}"
           createMethod: GET
           createPath: "/api/v1/clusters/{{ .Outputs.clusterreg.clusteruid }}/cluster-install-info?version={{ .Values.runaiVersion }}"
           credentialsSecret: "runai-auth-token-{{ .Values.tenantSlug }}"
@@ -163,7 +183,7 @@ spec:
         parameters:
           tenantSlug: "{{ .Values.tenantSlug }}"
           controlPlaneFqdn: "{{ .Outputs.discover.controlplanefqdn }}"
-          clusterDomain: "{{ if .Values.tenantClusterDomain }}{{ .Values.tenantClusterDomain }}{{ else }}{{ .Values.tenantSlug }}.{{ .Outputs.discover.hostingressaddress }}.nip.io{{ end }}"
+          clusterDomain: "{{ if .Values.tenantClusterDomain }}{{ .Values.tenantClusterDomain }}{{ else if eq .Values.ingressProvider \"aws\" }}{{ else }}{{ .Values.tenantSlug }}.{{ .Outputs.discover.hostingressaddress }}.nip.io{{ end }}"
           clusterUID: "{{ .Outputs.clusterreg.clusteruid }}"
           clientSecret: "{{ .Outputs.clustercreds.clientsecret }}"
           customCAEnabled: "{{ .Outputs.discover.customcaenabled }}"

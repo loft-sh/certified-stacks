@@ -1,4 +1,4 @@
-# This template creates a tenant cluster, its run:ai registration, and its run:ai StackInstance.
+# This template creates a tenant cluster, its NVIDIA Run:ai registration, and its NVIDIA Run:ai StackInstance.
 #
 # Before you use this template:
 #   1. Apply Apps and StackTemplates.
@@ -7,7 +7,7 @@
 #
 # `spaceTemplate` creates a registration named after the tenant cluster.
 # The Secret mappings provide the control-plane address, client secret, registry credential, and CA.
-# The tenant Stack has no inputs.
+# The tenant Stack takes no tenant-supplied values.
 #
 # Set `tenantSlug` only for a tenant with an existing registration under a different name.
 # It disables the template registration and selects that registration's facts Secret.
@@ -20,10 +20,10 @@ kind: VirtualClusterTemplate
 metadata:
   name: runai-tenant-central-control-plane
 spec:
-  displayName: Run:ai central-control-plane tenant
+  displayName: NVIDIA Run:ai central-control-plane tenant
   description: >-
     Apply host and registration StackTemplates first. This template creates a tenant cluster,
-    registers it with the shared run:ai control plane, and deploys the run:ai cluster agent through
+    registers it with the shared NVIDIA Run:ai control plane, and deploys the NVIDIA Run:ai cluster agent through
     deploy.stacks. This is not a one-shot host installation: it reuses
     shared host infrastructure. Before creation, platform operators must install the shared host
     foundation, provide ingress-nginx with IngressClass `nginx` and its LoadBalancer IPv4 address,
@@ -33,6 +33,7 @@ spec:
     user: admin
   parameters:
     - variable: nodeSelectorValue
+      label: "Node selector value"
       # Use one value for one tenant.
       # Each tenant scheduler assumes it owns all visible GPU capacity.
       # A tenant without matching nodes cannot schedule workloads.
@@ -40,43 +41,63 @@ spec:
       type: string
       required: true
     - variable: nodeSelectorLabel
+      label: "Node selector label"
       description: Host node label key that assigns nodes to tenants. Set by host foundation policy.
       type: string
       required: true
       defaultValue: runai.vcluster.com/tenant
     - variable: tenantImagePullSecret
+      label: "Tenant image pull Secret name"
       # This Secret supplies tenant workload ServiceAccount and registration hook Jobs.
-      description: Use this Secret to pull images for tenant workloads and hook Jobs.
+      description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
       type: string
       defaultValue: ""
       validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
-    - variable: projectNamespacePrefix
-      description: Prefix Platform uses for project namespaces.
-      type: string
-      defaultValue: "p-"
-      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
     - variable: controlPlaneClusterName
+      label: "Control plane cluster name"
       # Change only when Platform connected cluster is not named loft-cluster.
       description: Name of Platform control-plane cluster.
       type: string
       defaultValue: loft-cluster
       validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    # This chooses render-time tenant-domain derivation. TLS mode comes from host endpoint data.
+    - variable: ingressProvider
+      label: "Shared host ingress provider."
+      description: Use standard for an IPv4 address. Use aws for an ELB or NLB hostname.
+      type: string
+      defaultValue: standard
+      options:
+        - standard
+        - aws
+    - variable: ingressControllerNamespace
+      label: "Ingress controller namespace"
+      description: Host namespace that contains ingress-nginx controller Pods.
+      type: string
+      defaultValue: ingress-nginx
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: tenantClusterDomain
+      label: "Tenant cluster domain"
+      description: Optional tenant domain. Required for AWS ingress without a usable nip.io address.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
     - variable: tenantSlug
+      label: "Tenant registration name"
       # Set this only for an existing registration.
       # An empty value creates a registration with the cluster name.
       # A missing registration leaves the tenant waiting for its facts Secret.
-      description: The name of a pre-existing run:ai cluster.  Otherwise, leave this field blank.
+      description: The name of a pre-existing NVIDIA Run:ai cluster.  Otherwise, leave this field blank.
       type: string
       defaultValue: ""
       validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
     # Keep this input name for callers that already disable the former CronJob.
     - variable: createCustomLinkCronJob
-      label: Create Run:ai custom-link Job
+      label: Create NVIDIA Run:ai custom-link Job
       description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
       type: boolean
       defaultValue: "true"
   template:
-    # Each tenant cluster uses one run:ai cluster.
+    # Each tenant cluster uses one NVIDIA Run:ai cluster.
     # Set `tenantSlug` to adopt an existing registration.
     # An empty value creates a registration with the tenant cluster name.
     spaceTemplate:
@@ -87,7 +108,7 @@ spec:
         metadata:
           name: runai-reg-{{ .Values.loft.virtualClusterName }}
         spec:
-          displayName: "run:ai registration for {{ .Values.loft.virtualClusterName }}"
+          displayName: "NVIDIA Run:ai registration for {{ .Values.loft.virtualClusterName }}"
           owner:
             user: admin
           destination:
@@ -98,6 +119,8 @@ spec:
           parameters:
             tenantSlug: {{ .Values.loft.virtualClusterName }}
             hookImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
+            ingressProvider: "{{ .Values.ingressProvider }}"
+            tenantClusterDomain: "{{ .Values.tenantClusterDomain }}"
         {{- end }}
       apps:
         - name: runai-custom-link-central-control-plane
@@ -105,7 +128,6 @@ spec:
             createCustomLinkJob: {{ .Values.createCustomLinkCronJob }}
             controlPlaneClusterName: "{{ .Values.controlPlaneClusterName }}"
             tenantImagePullSecret: "{{ .Values.tenantImagePullSecret }}"
-            projectNamespacePrefix: "{{ .Values.projectNamespacePrefix }}"
     instanceTemplate:
       metadata:
         labels:
@@ -134,7 +156,19 @@ spec:
         {{ end }}
         policies:
           networkPolicy:
-            enabled: false
+            enabled: true
+            workload:
+              egress:
+                - to:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: {{ .Values.ingressControllerNamespace }}
+                      podSelector:
+                        matchLabels:
+                          app.kubernetes.io/component: controller
+                  ports:
+                    - protocol: TCP
+                      port: 443
         sync:
           fromHost:
             nodes:
@@ -170,7 +204,6 @@ spec:
               enabled: true
         networking:
           advanced:
-            fallbackHostCluster: true
             proxyKubelets:
               byIP: true
         deploy:

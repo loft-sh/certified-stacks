@@ -10,8 +10,8 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 7] Control Plane'
-  description: run:ai self-hosted control plane. Consumes the admin Secret and CA written by the bootstrap step.
+  displayName: '[NVIDIA Run:ai Step - 7] Control Plane'
+  description: NVIDIA Run:ai self-hosted control plane. Consumes the admin Secret and CA written by the bootstrap step.
   defaultNamespace: runai-backend
   wait: true
   timeout: 25m

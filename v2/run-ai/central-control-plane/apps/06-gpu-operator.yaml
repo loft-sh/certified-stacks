@@ -8,7 +8,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 6] NVIDIA GPU Operator'
+  displayName: '[NVIDIA Run:ai Step - 6] NVIDIA GPU Operator'
   description: NVIDIA GPU Operator for GPU nodes.
   defaultNamespace: gpu-operator
   wait: true

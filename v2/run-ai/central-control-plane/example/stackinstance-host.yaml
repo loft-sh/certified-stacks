@@ -10,7 +10,7 @@ kind: StackInstance
 metadata:
   name: runai
 spec:
-  displayName: "run:ai shared host foundation"
+  displayName: "NVIDIA Run:ai shared host foundation"
   owner:
     user: admin
   destination:
@@ -34,7 +34,7 @@ spec:
     # when your Platform image is from a private registry or an air-gapped mirror. Check with:
     #   kubectl -n vcluster-platform get pod -l app=loft \
     #     -o jsonpath='{.items[0].spec.containers[?(@.name=="manager")].image}'
-    # This is not the run:ai registry credential above: pull secrets match by registry host.
+    # This is not the NVIDIA Run:ai registry credential above: pull secrets match by registry host.
     # hookImagePullSecret: platform-reg-creds
     # Optional. A real domain you control, instead of the derived nip.io name. Strongly recommended
     # in production: one nip.io name shared by every tenant can never carry a publicly trusted

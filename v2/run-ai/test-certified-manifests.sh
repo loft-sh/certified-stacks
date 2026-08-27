@@ -3,6 +3,24 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# Fail on a missing prerequisite by name, rather than part-way through with `mapfile: command not
+# found` or `rg: command not found` after some checks have already reported ok.
+#
+# `mapfile` is a bash builtin, but only since bash 4.0. Every current Linux distribution ships bash
+# 5.x, so this passes there; macOS still ships bash 3.2 as /bin/bash, where `mapfile` does not
+# exist. `rg` and `python3` are not installed by default on either.
+missing=()
+[[ "${BASH_VERSINFO[0]}" -ge 4 ]] || missing+=("bash >= 4 (running ${BASH_VERSION}; macOS /bin/bash is 3.2 -- try 'brew install bash')")
+for tool in python3 rg; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+command -v python3 >/dev/null && { python3 -c 'import yaml' 2>/dev/null || missing+=("PyYAML (python3 -m pip install pyyaml); needed to verify the manifests parse as YAML"); }
+if [[ "${#missing[@]}" -gt 0 ]]; then
+  echo "cannot run: missing prerequisite(s)" >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  exit 2
+fi
+
 require() {
   grep -qE "$2" "$1" || {
     echo "FAIL $1: missing $2" >&2
@@ -25,8 +43,68 @@ require "$central_host" '^  name: run-ai-central-control-plane-host$'
 require "$central_host" '^    vcluster\.com/certified: "true"$'
 require "$central_reg" '^  name: run-ai-central-control-plane-registration$'
 require "$central_reg" '^    vcluster\.com/certified: "true"$'
-require "$dedicated" 'variable: ingressProvider, type: string, required: true, defaultValue: standard, validation: '\''\^\(standard\|aws\)\$'\'''
+require "$dedicated" 'variable: ingressProvider'
 require "$root/dedicated-control-plane/apps/02-ingress-nginx.yaml" '{{ if eq .Values.ingressProvider "aws" }}'
+
+# Closed string choices render as UI options, not hand-maintained regex alternation. Keep defaults
+# and valid values coupled, then reject future simple enum validations anywhere in generated manifests.
+python3 - "$root" <<'OPTIONS' || exit 1
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+root = Path(sys.argv[1])
+expected = {
+    "dedicated-control-plane/stacktemplate.yaml": {
+        "ingressProvider": ["standard", "aws"],
+        "tlsMode": ["self-signed", "user-provided"],
+        "gpuProvider": ["standard", "gke"],
+    },
+    "central-control-plane/stacktemplate-host.yaml": {
+        "ingressProvider": ["standard", "aws"],
+        "tlsMode": ["self-signed", "user-provided"],
+        "gpuProvider": ["standard", "gke"],
+    },
+    "central-control-plane/stacktemplate-registration.yaml": {
+        "ingressProvider": ["standard", "aws"],
+    },
+    "dedicated-control-plane/example/vcluster-template-with-runai-stack.yaml": {
+        "ingressProvider": ["standard", "aws"],
+    },
+    "dedicated-control-plane/apps/02-ingress-nginx.yaml": {
+        "ingressProvider": ["standard", "aws"],
+    },
+    "central-control-plane/example/vcluster-template-with-runai-stack.yaml": {
+        "ingressProvider": ["standard", "aws"],
+    },
+    "central-control-plane/apps/04-bootstrap.yaml": {
+        "ingressProvider": ["standard", "aws"],
+        "tlsMode": ["self-signed", "user-provided"],
+    },
+}
+for relative, wanted in expected.items():
+    path = root / relative
+    parameters = yaml.safe_load(path.read_text())["spec"]["parameters"]
+    by_name = {parameter["variable"]: parameter for parameter in parameters}
+    for name, options in wanted.items():
+        if by_name.get(name, {}).get("options") != options:
+            print(f"FAIL {path}: {name} options must be {options}", file=sys.stderr)
+            raise SystemExit(1)
+
+simple_enum = re.compile(r"^\^\([a-z][a-z0-9-]*(?:\|[a-z][a-z0-9-]*)+\)\$$")
+for path in root.rglob("*.yaml"):
+    for document in yaml.safe_load_all(path.read_text()):
+        if not isinstance(document, dict):
+            continue
+        for parameter in document.get("spec", {}).get("parameters", []):
+            if not isinstance(parameter, dict):
+                continue
+            if simple_enum.fullmatch(parameter.get("validation", "")):
+                print(f"FAIL {path}: {parameter['variable']} uses enum validation; use options", file=sys.stderr)
+                raise SystemExit(1)
+OPTIONS
 
 # The ingress task reads its `address` output from the controller Service by name, and the Platform
 # names each stack child `<stack>-<task>-<hash>` (adapter.ChildName), so the release name is not
@@ -160,13 +238,13 @@ if grep -E 'variable: (adminUsername|adminPassword)' "$central_reg" >/dev/null; 
   exit 1
 fi
 # Per-tenant output Secret names. Fixed names would let one tenant's teardown read another tenant's
-# uid and deregister the wrong run:ai cluster.
+# uid and deregister the wrong NVIDIA Run:ai cluster.
 require "$central_reg" 'outputSecret: "runai-auth-token-\{\{ \.Values\.tenantSlug \}\}"'
 require "$central_reg" 'outputSecret: "runai-cluster-registration-\{\{ \.Values\.tenantSlug \}\}"'
 require "$central_reg" 'outputSecret: "runai-cluster-creds-\{\{ \.Values\.tenantSlug \}\}"'
 require "$central_reg" 'name: clusterUID'
 require "$central_reg" 'name: clientSecret'
-# tenantSlug identifies the run:ai cluster; a default makes collision the default behaviour.
+# tenantSlug identifies the NVIDIA Run:ai cluster; a default makes collision the default behaviour.
 if grep -E 'variable: tenantSlug.*defaultValue' "$central_reg" >/dev/null; then
   echo "FAIL registration tenantSlug has a default" >&2
   exit 1
@@ -243,13 +321,16 @@ if grep -qE 'hookImagePullSecret|imagePullSecrets' "$dedicated_boot"; then
   exit 1
 fi
 require "$central_boot" 'variable: hookImagePullSecret'
-# Tenant cluster API Ingress hosts are `<vcluster>.<host IP>.nip.io`, not children of the Run:ai
+# Tenant cluster API Ingress hosts are `<vcluster>.<host IP>.nip.io`, not children of the NVIDIA Run:ai
 # control-plane hostname. Host bootstrap certificate therefore needs its own nip.io wildcard SAN.
 require "$central_boot" 'variable: additionalDnsName'
 require "$central_boot" 'SAN="\$SAN,DNS:\$ADDITIONAL_DNS_NAME"'
 require "$central_boot" 'for dns_name in "\$FQDN" "\*\.\$FQDN" "\$ADDITIONAL_DNS_NAME"; do'
 require "$central_boot" 'subjectAltName=\$SAN'
-require "$central_host" 'additionalDnsName: "\*\.\{\{ \.Values\.hostIngressAddress \}\}\.nip\.io"'
+# Under `standard` that wildcard is still derived; under `aws` the host address is a LoadBalancer
+# hostname, a wildcard beneath it resolves for nobody, and the App's validation demands a leading
+# `*.`, so the value must be empty.
+require "$central_host" 'additionalDnsName: "\{\{ if eq \.Values\.ingressProvider .*aws.* \}\}\{\{ else \}\}\*\.\{\{ \.Values\.hostIngressAddress \}\}\.nip\.io\{\{ end \}\}"'
 n=$(grep -c 'imagePullSecrets:' "$central_boot" || true)
 [[ "$n" == 2 ]] || {
   echo "FAIL $central_boot: expected imagePullSecrets in both bootstrap Jobs, found $n" >&2
@@ -258,7 +339,7 @@ n=$(grep -c 'imagePullSecrets:' "$central_boot" || true)
 # The discover App is central-only. It exists to read objects some other Stack wrote, or the vCluster
 # syncer placed, and dedicated control-plane tenancy has neither: one Stack there owns every value it needs. It is also
 # where the tenant Stack blocks on the synced control-plane CA, so dropping the wait Job turns a
-# Secret that never arrives into late TLS failures from the run:ai agent instead of a failed task.
+# Secret that never arrives into late TLS failures from the NVIDIA Run:ai agent instead of a failed task.
 central_discover="$root/central-control-plane/apps/02-discover.yaml"
 require "$central_discover" '^  name: runai-step-02-discover$'
 # Fixed namespace, not a parameter: the outputs allow-list follows the release namespace, which for a
@@ -305,6 +386,8 @@ require "$central_reg" 'baseURL: "https://\{\{ \.Outputs\.discover\.controlplane
 for boot in "$dedicated_boot" "$central_boot"; do
   require "$boot" 'customCAEnabled: "\{\{ \.Values\.customCAEnabled \| default "true" \}\}"'
 done
+# Registration must use host-published TLS behavior without branching on a task output.
+require "$central_boot" 'tlsInsecure:'
 require "$dedicated" 'customCAEnabled: "\{\{ \.Values\.customCAEnabled \}\}"'
 require "$central_host" 'customCAEnabled: "\{\{ \.Values\.customCAEnabled \}\}"'
 
@@ -465,7 +548,7 @@ if grep -qE '^      (chart|repoURL|version):' "$skip_app"; then
 fi
 for template in "$dedicated" "$central_host"; do
   require "$template" 'variable: gpuProvider'
-  require "$template" 'validation: .\^\(standard\|gke\)\$'
+  require "$template" 'variable: gpuProvider'
   if ! grep -qF -- 'templateRef: { name: "runai-step-06-gpu-operator{{ if eq .Values.gpuProvider \"gke\" }}-skip{{ end }}" }' "$template"; then
     echo "FAIL $template: gpu templateRef must select the -skip App when gpuProvider is gke" >&2
     exit 1
@@ -476,13 +559,21 @@ require "$dedicated" 'dependsOn: \[ingress, registry, namespace\]'
 require "$central_host" 'dependsOn: \[registry, namespace\]'
 
 # The facts Secret is the only source of a tenant's connection values. A tenant must never re-derive
-# them or accept a second copy of the run:ai cluster URL, UID, client secret, or control-plane FQDN.
+# them or accept a second copy of the NVIDIA Run:ai cluster URL, UID, client secret, or control-plane FQDN.
 require "$central" 'templateRef: \{ name: runai-step-02-discover \}'
 require "$central" 'awaitSecrets: "runai-tenant-facts,runai-reg-creds-host'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: fqdn \}'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: clusterdomain \}'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: uid \}'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: clientsecret \}'
+# requireControlPlaneCA decides what discover waits for, so it cannot be read from the Secret
+# discover is waiting on. It is checked against that Secret instead, before the wait, so a
+# disagreement with the host names both values rather than timing out or -- in the false-against-a-
+# custom-CA direction -- starting the NVIDIA Run:ai agent with nothing to trust.
+require "$central" 'assertSecret: runai-tenant-facts'
+require "$central" 'assertSecretKey: customcaenabled'
+require "$central" 'assertSecretValue: "\{\{ \.Values\.requireControlPlaneCA \}\}"'
+require "$root/central-control-plane/apps/02-discover.yaml" 'if \[ "\$actual" != "\$ASSERT_VALUE" \]; then'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: customcaenabled \}'
 require "$central" 'clusterFqdn: "\{\{ \.Outputs\.discover\.clusterdomain \}\}"'
 require "$central" 'dependsOn: \[discover, registry, prometheus\]'
@@ -531,8 +622,8 @@ if grep -nE 'kind: Secret' "$central" "$central_host" "$central_reg" "$dedicated
   echo "     The Platform forbids it: use fromSecret, which keeps the value sensitive and decodes it." >&2
   exit 1
 fi
-if grep -E 'variable: (adminUsername|adminPassword|dockerServer|dockerUsername|runaiRegistryCredentials|dockerEmail).*defaultValue' "$dedicated" "$central" "$central_host" "$central_reg" >/dev/null || \
-  rg -U -P 'variable: (adminUsername|adminPassword|dockerServer|dockerUsername|runaiRegistryCredentials|dockerEmail)(?s:(?:(?!^    - variable:).)*?)defaultValue' "$root/dedicated-control-plane/apps" "$root/central-control-plane/apps" >/dev/null; then
+if grep -E 'variable: (adminPassword|runaiRegistryCredentials).*defaultValue' "$dedicated" "$central" "$central_host" "$central_reg" >/dev/null || \
+  rg -U -P 'variable: (adminPassword|runaiRegistryCredentials)(?s:(?:(?!^    - variable:).)*?)defaultValue' "$root/dedicated-control-plane/apps" "$root/central-control-plane/apps" >/dev/null; then
   echo "FAIL credential input has a default" >&2
   exit 1
 fi
@@ -541,9 +632,18 @@ if grep -q 'skipTLSVerify' "$dedicated"; then
   exit 1
 fi
 require "$dedicated" "insecure: '{{ eq .Values.tlsMode \"self-signed\" }}'"
-# Central's REST calls moved to the registration Stack; the tenant Stack makes none. Same intent as the
-# dedicated assertion: TLS verification is skipped only during documented self-signed bootstrap.
-require "$central_reg" "insecure: '{{ eq .Values.tlsMode \"self-signed\" }}'"
+# Central's REST calls use host-published TLS behavior. Task outputs cannot drive conditions, but
+# they can pass a precomputed boolean to the App parameter.
+require "$central_reg" 'jsonPath: "\{\.data\.tlsInsecure\}"'
+n=$(grep -cF 'insecure: "{{ .Outputs.discover.tlsinsecure }}"' "$central_reg" || true)
+[[ "$n" == 3 ]] || {
+  echo "FAIL $central_reg: expected all 3 REST tasks to use discovered TLS behavior, found $n" >&2
+  exit 1
+}
+if grep -q 'variable: tlsMode' "$central_reg"; then
+  echo "FAIL $central_reg: TLS mode must come from host endpoint data" >&2
+  exit 1
+fi
 if grep -q 'restful-operation' "$central"; then
   echo "FAIL central tenant StackTemplate calls the control-plane API" >&2
   exit 1
@@ -565,6 +665,16 @@ dedicated_vcluster="$root/dedicated-control-plane/example/vcluster-template-with
 central_vcluster="$root/central-control-plane/example/vcluster-template-with-runai-stack.yaml"
 require "$dedicated_vcluster" '^  name: runai-tenant$'
 require "$central_vcluster" '^  name: runai-tenant-central-control-plane$'
+# Only ingressProvider controls registration template conditions. TLS behavior comes from host data.
+for variable in ingressProvider tenantClusterDomain; do
+  require "$central_vcluster" "variable: $variable"
+done
+require "$central_vcluster" 'ingressProvider: "\{\{ \.Values\.ingressProvider \}\}"'
+require "$central_vcluster" 'tenantClusterDomain: "\{\{ \.Values\.tenantClusterDomain \}\}"'
+if grep -q 'variable: tlsMode\|tlsMode: "{{ .Values.tlsMode }}"' "$central_vcluster"; then
+  echo "FAIL $central_vcluster: TLS mode must not be copied into registration" >&2
+  exit 1
+fi
 require "$central_vcluster" 'shared host infrastructure'
 # Dedicated control-plane tenancy installs its own control plane, so whoever creates the cluster supplies the registry
 # credential. Central tenants reuse the one the Control Plane Cluster already holds, synced in, so those
@@ -593,7 +703,7 @@ dedicated_link="$root/dedicated-control-plane/apps/custom-link.yaml"
 central_link="$root/central-control-plane/apps/custom-link.yaml"
 for template in "$dedicated_vcluster" "$central_vcluster"; do
   require "$template" 'variable: createCustomLinkCronJob'
-  require "$template" 'label: Create Run:ai custom-link Job'
+  require "$template" 'label: Create NVIDIA Run:ai custom-link Job'
   require "$template" 'type: boolean'
   require "$template" 'defaultValue: "true"'
   # The toggle reaches the App as a parameter. It cannot gate the `apps` entry itself: a
@@ -656,6 +766,10 @@ for template in "$dedicated_link" "$central_link"; do
     echo "FAIL $template: RBAC rule grants patch without get; kubectl patch GETs the object first" >&2
     exit 1
   fi
+  # A failed Job pod is retried. Cross-namespace RBAC must survive until a pod sets the link,
+  # otherwise its next retry loses access to the VCI and its cleanup Role.
+  require "$template" 'link_complete=true'
+  require "$template" '\[ "\$\{link_complete:-\}" = true \] \|\| return 0'
   # The control-plane FQDN is a real domain whenever `domain` is set, and the load balancer address
   # under the aws ingress provider. Selecting the Ingress host by a nip.io suffix strands every one
   # of those installations on "Ingress not ready" until the Job gives up.
@@ -676,9 +790,14 @@ for template in "$dedicated_link" "$central_link"; do
   # Job reports "VirtualClusterInstance not ready" until it gives up.
   require "$template" '\- name: PROJECT_NAMESPACE'
   require "$template" 'value: \{\{ \$projectNamespace \}\}'
-  # Project namespace prefix is installation-wide but configurable; tenant project remains derived.
-  require "$template" 'projectNamespace := printf "%s%s" \.Values\.projectNamespacePrefix \.Values\.loft\.project'
-  require "$template" 'variable: projectNamespacePrefix'
+  # Platform resolves the exact project namespace from its Project object, so the user never supplies
+  # or needs to know the installation-wide namespace prefix.
+  require "$template" '\$loft := \.Values\.loft \| default dict'
+  require "$template" 'projectNamespace := required "runai-custom-link.* requires loft\.projectNamespace" \$loft\.projectNamespace'
+  if rg -q 'projectNamespacePrefix' "$template"; then
+    echo "FAIL $template: custom-link exposes a project namespace prefix" >&2
+    exit 1
+  fi
   if rg -q 'VCI_NAMESPACE' "$template"; then
     echo "FAIL $template: VCI_NAMESPACE conflates the space namespace with the project namespace" >&2
     exit 1
@@ -696,6 +815,9 @@ for template in "$dedicated_link" "$central_link"; do
   # without the delete, per-tenant Roles pile up in the project namespace forever.
   require "$template" 'install_project_cleanup_tree'
   require "$template" 'cleanup_project_access'
+  require "$template" 'cleanup_access\(\)'
+  require "$template" 'trap cleanup_access 0'
+  require "$template" "trap 'exit 1' HUP INT TERM"
   require "$template" 'delete role "\$HELPER_NAME"'
   # The prefix is an installation-wide Platform setting, so no manifest may bake a project namespace in.
   if rg -q 'namespace: (p|loft-p)-' "$template"; then
@@ -706,7 +828,7 @@ for template in "$dedicated_link" "$central_link"; do
   # is not defaulted: an empty namespace there binds to the RoleBinding's own namespace instead, which
   # looks correct for a same-namespace binding and denies every cross-namespace one. Every object and
   # every subject names its namespace, so nothing depends on that defaulting.
-  require "$template" '\$spaceNamespace := \.Values\.loft\.space'
+  require "$template" '\$spaceNamespace := required "runai-custom-link.* requires loft\.space" \$loft\.space'
   if rg -U -q 'kind: ServiceAccount\n            name: \{\{ \$helperName \}\}\n(?!            namespace: \{\{ \$spaceNamespace \}\})' -P "$template"; then
     echo "FAIL $template: ServiceAccount subject does not name the space namespace" >&2
     exit 1
@@ -717,12 +839,40 @@ done
 require "$dedicated_link" 'vc_namespace" != "\$SPACE_NAMESPACE"'
 # Dedicated Job reads only its own vCluster credential, never every Secret in shared tenant space.
 require "$dedicated_link" 'resourceNames: \["vc-\{\{ \$vciName \}\}"\]'
-# Tenant templates expose Platform namespace prefix and forward it into custom-link App.
+# An HTTP listener that returns 5xx is not a ready admission webhook. Authentication/authorization
+# responses prove it accepted TLS, while server errors must keep the installer waiting.
+admission_ready="$root/dedicated-control-plane/apps/03-ingress-admission-ready.yaml"
+require "$admission_ready" 'case "\$code" in'
+require "$admission_ready" '2\*\|3\*\|4\*\) exit 0'
+if rg -q '\[ "\$code" != 000 \]' "$admission_ready"; then
+  echo "FAIL $admission_ready: treats every HTTP response as a ready admission webhook" >&2
+  exit 1
+fi
+# Central tenants need policy enforcement and must not forward unresolved DNS to host cluster.
+if ! rg -U -q 'policies:\n          networkPolicy:\n            enabled: true' "$central_vcluster"; then
+  echo "FAIL $central_vcluster: central tenant network policy is disabled" >&2
+  exit 1
+fi
+if rg -q 'fallbackHostCluster' "$central_vcluster"; then
+  echo "FAIL $central_vcluster: central tenant forwards unresolved DNS to host cluster" >&2
+  exit 1
+fi
+# The NVIDIA Run:ai hook reaches the public control-plane FQDN. Load-balancer DNAT can make that egress
+# appear as ingress-controller Pod traffic to the CNI, so allow only controller HTTPS.
+require "$central_vcluster" 'variable: ingressControllerNamespace'
+require "$central_vcluster" 'defaultValue: ingress-nginx'
+if ! rg -U -q 'workload:\n              egress:\n                - to:\n                    - namespaceSelector:\n                        matchLabels:\n                          kubernetes.io/metadata.name: \{\{ \.Values\.ingressControllerNamespace \}\}\n                      podSelector:\n                        matchLabels:\n                          app.kubernetes.io/component: controller\n                  ports:\n                    - protocol: TCP\n                      port: 443' "$central_vcluster"; then
+  echo "FAIL $central_vcluster: central tenant workloads cannot reach ingress controller HTTPS" >&2
+  exit 1
+fi
+# Tenant templates must not expose or forward Platform's private project namespace prefix.
 for template in \
   "$root/source/dedicated-control-plane/example/vcluster-template-with-runai-stack.yaml" \
   "$root/source/central-control-plane/example/vcluster-template-with-runai-stack.yaml"; do
-  require "$template" 'variable: projectNamespacePrefix'
-  require "$template" 'projectNamespacePrefix: "\{\{ \.Values\.projectNamespacePrefix \}\}"'
+  if rg -q 'projectNamespacePrefix' "$template"; then
+    echo "FAIL $template: tenant template exposes a project namespace prefix" >&2
+    exit 1
+  fi
 done
 # Dedicated tenancy knows its own control-plane FQDN, so it pins the Ingress host to the `domain`
 # input when one is set instead of trusting whatever host the tenant's Ingress happens to carry.
@@ -762,7 +912,7 @@ if ! rg -U -q 'nodes:\n              enabled: true' "$central_vcluster"; then
   echo "FAIL $central_vcluster: tenant does not sync host nodes; GPU capacity would be invisible" >&2
   exit 1
 fi
-# run:ai GPU workloads select runtimeClassName nvidia. With the GPU Operator on the host, nothing in
+# NVIDIA Run:ai GPU workloads select runtimeClassName nvidia. With the GPU Operator on the host, nothing in
 # the tenant creates that object, so it has to be synced in.
 if ! rg -U -q 'runtimeClasses:\n              enabled: true' "$central_vcluster"; then
   echo "FAIL $central_vcluster: nvidia RuntimeClass is not synced from the host" >&2
@@ -792,7 +942,7 @@ fi
 require "$central_vcluster" 'tenantSlug: \{\{ \.Values\.loft\.virtualClusterName \}\}'
 # The guard is the one that matters most. tenantSlug means "a registration for this tenant already
 # exists"; without it, setting tenantSlug adds a SECOND registration under the cluster's own name,
-# and two Stacks adopting one run:ai cluster is the exact collision slug uniqueness exists to stop.
+# and two Stacks adopting one NVIDIA Run:ai cluster is the exact collision slug uniqueness exists to stop.
 if ! rg -U -q 'objects: \|-\n        \{\{- if not \.Values\.tenantSlug \}\}' "$central_vcluster"; then
   echo "FAIL $central_vcluster: the owned registration is not guarded by '{{- if not .Values.tenantSlug }}'" >&2
   echo "     Setting tenantSlug would then double-register the tenant." >&2
@@ -823,4 +973,125 @@ if rg -U -q 'variable: nodeSelectorValue(?s:(?:(?!- variable:).)*?)defaultValue'
   exit 1
 fi
 
-echo "Certified Run:ai StackTemplates present."
+python3 - "$root" <<'YAMLPARSE' || exit 1
+import sys
+from pathlib import Path
+
+import yaml
+
+root = Path(sys.argv[1])
+failed = False
+for path in sorted(root.rglob("*.yaml")):
+    try:
+        list(yaml.safe_load_all(path.read_text()))
+    except yaml.YAMLError as err:
+        failed = True
+        mark = getattr(err, "problem_mark", None)
+        where = f":{mark.line + 1}" if mark else ""
+        problem = getattr(err, "problem", None) or str(err).splitlines()[0]
+        print(f"FAIL {path}{where}: not valid YAML: {problem}", file=sys.stderr)
+        print("     a Go template inside a double-quoted scalar must escape its own quotes as \\\"", file=sys.stderr)
+sys.exit(1 if failed else 0)
+YAMLPARSE
+
+# The NVIDIA Run:ai version is spelled out in seven places and `chart.version` cannot be templated: the
+# Platform renders Go templates in `values` and `manifests`, not in the chart coordinates. So
+# `runaiVersion` cannot drive the chart, and its only real job is the `cluster-install-info?version=`
+# query. Keeping the two equal was a comment; make it a failure. A bump has to move every one of
+# these together, and half-landing it means the control plane installs one version while the
+# registration asks the API about another.
+python3 - "$root" <<'VERSIONS' || exit 1
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+found = {}
+
+# The two NVIDIA Run:ai charts. Other Apps pin unrelated charts (GPU Operator, kube-prometheus-stack,
+# ingress-nginx) whose versions are their own and must not be dragged in here.
+for variant in ("dedicated-control-plane", "central-control-plane"):
+    for app in ("07-control-plane.yaml", "08-cluster.yaml"):
+        path = root / variant / "apps" / app
+        text = path.read_text()
+        m = re.search(r'^      version: "([^"]+)"$', text, re.M)
+        if not m:
+            print(f"FAIL {path}: no quoted chart version found", file=sys.stderr)
+            raise SystemExit(1)
+        found.setdefault(m.group(1), []).append(f"{path}:chart.version")
+
+    for template in sorted((root / variant).glob("stacktemplate*.yaml")):
+        for m in re.finditer(r'variable: runaiVersion.*?defaultValue: "([^"]+)"', template.read_text()):
+            found.setdefault(m.group(1), []).append(f"{template}:runaiVersion default")
+
+    for example in sorted((root / variant / "example").glob("*.yaml")):
+        for m in re.finditer(r'^\s*runaiVersion: "([^"]+)"$', example.read_text(), re.M):
+            found.setdefault(m.group(1), []).append(f"{example}:runaiVersion")
+
+if len(found) != 1:
+    print("FAIL NVIDIA Run:ai version disagrees across the files that must move together:", file=sys.stderr)
+    for version, places in sorted(found.items()):
+        print(f"  {version}", file=sys.stderr)
+        for place in places:
+            print(f"    {place}", file=sys.stderr)
+    raise SystemExit(1)
+
+version, places = next(iter(found.items()))
+if len(places) < 7:
+    print(f"FAIL only {len(places)} NVIDIA Run:ai version site(s) found; expected at least 7", file=sys.stderr)
+    for place in places:
+        print(f"    {place}", file=sys.stderr)
+    raise SystemExit(1)
+VERSIONS
+
+# GCP and Azure publish an ingress LoadBalancer as an IPv4 address; AWS publishes an ELB/NLB
+# hostname and never an address, so `<name>.<address>.nip.io` has nothing to build on. The
+# dedicated Stack has always had `ingressProvider` for this; the central host Stack must offer the
+# same lever, and its address pattern must admit a hostname as well as an IPv4 address.
+require "$central_host" 'variable: ingressProvider'
+require "$central_host" 'variable: ingressProvider'
+for template in "$dedicated" "$central_host"; do
+  if ! grep -qF 'else if eq .Values.ingressProvider \"aws\"' "$template"; then
+    echo "FAIL $template: FQDN derivation has no aws branch, so a hostname LoadBalancer gets a nip.io name" >&2
+    exit 1
+  fi
+done
+# Registration takes ingress provider as an input because task outputs cannot drive conditions.
+# Under aws it derives nothing and tenant-facts validation names the fix.
+require "$central_reg" 'variable: ingressProvider'
+require "$central_reg" 'variable: ingressProvider'
+n=$(grep -cE 'else if eq \.Values\.ingressProvider .*aws.* \}\}\{\{ else \}\}' "$central_reg" || true)
+[[ "$n" == 2 ]] || {
+  echo "FAIL $central_reg: both the registration body and the facts domain must skip nip.io under aws, found $n" >&2
+  exit 1
+}
+facts="$root/central-control-plane/apps/03-tenant-facts.yaml"
+require "$facts" 'validation: \^\[a-z0-9\]\(\[-a-z0-9\.\]\*\[a-z0-9\]\)\?\$'
+
+# Stack task outputs resolve after template conditions. They may only appear in direct substitutions.
+if rg -U -q '\{\{[^}]*\b(if|else if|eq|ne|and|or|not)\b[^}]*\.Outputs[^}]*\}\}' "$root/source"; then
+  echo "FAIL StackTemplate condition reads .Outputs; use .Values for condition inputs" >&2
+  exit 1
+fi
+
+# Every hook Job runs arbitrary shell as the Platform image on a cluster the operator does not
+# necessarily own, so each one is hardened the same way: non-root, RuntimeDefault seccomp, no
+# privilege escalation, a read-only root filesystem, no capabilities, and bounded resources. The
+# count is per Job rather than per file, so adding a second Job to an existing App cannot inherit
+# the first one's block by accident. `restful-operation.yaml` was the file that prompted this.
+for variant in dedicated-control-plane central-control-plane; do
+  for app in "$root/$variant/apps"/*.yaml; do
+    jobs=$(grep -c '^      kind: Job$' "$app" || true)
+    [[ "$jobs" -gt 0 ]] || continue
+    for field in 'runAsNonRoot: true' 'type: RuntimeDefault' 'allowPrivilegeEscalation: false' \
+      'readOnlyRootFilesystem: true' 'drop: \["ALL"\]' 'requests:' 'limits:'; do
+      found=$(grep -cE "^ +${field}$" "$app" || true)
+      [[ "$found" -ge "$jobs" ]] || {
+        echo "FAIL $app: $jobs Job(s) but only $found '${field}'; every hook Job must be hardened" >&2
+        exit 1
+      }
+    done
+  done
+done
+
+echo "Certified NVIDIA Run:ai StackTemplates present."

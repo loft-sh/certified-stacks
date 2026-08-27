@@ -8,8 +8,8 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 8] Cluster'
-  description: run:ai cluster components, registered against the self-hosted control plane.
+  displayName: '[NVIDIA Run:ai Step - 8] Cluster'
+  description: NVIDIA Run:ai cluster components, registered against the self-hosted control plane.
   defaultNamespace: runai
   wait: true
   timeout: 20m

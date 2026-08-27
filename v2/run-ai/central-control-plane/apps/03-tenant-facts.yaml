@@ -16,7 +16,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 3] Tenant facts'
+  displayName: '[NVIDIA Run:ai Step - 3] Tenant facts'
   description: >-
     Writes one Secret per central-control-plane tenant holding the shared control plane's FQDN, that tenant's own
     cluster URL, its cluster UID, its client secret, and whether the control plane's CA must be
@@ -55,6 +55,10 @@ spec:
       description: Domain for tenant cluster workloads.
       type: string
       required: true
+      # Rejects the empty value the registration Stack produces when the host uses
+      # `ingressProvider: aws` and the tenant set no `tenantClusterDomain`. Failing here names the
+      # parameter to set; an empty domain would otherwise reach the control plane and the agent.
+      validation: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
     - variable: clusterUID
       label: Cluster UID
       description: uuid the control plane assigned when this tenant's cluster was registered.

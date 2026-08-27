@@ -8,52 +8,73 @@ metadata:
   labels:
     vcluster.com/certified: "true"
 spec:
-  displayName: "run:ai self-hosted (full infra, nip.io, real GPU operator)"
+  displayName: "NVIDIA Run:ai self-hosted (full infra, nip.io, real GPU operator)"
   description: >-
-    Full run:ai self-hosted infrastructure on a cloud cluster with no manual preflight:
+    Full NVIDIA Run:ai self-hosted infrastructure on a cloud cluster with no manual preflight:
     registry Secrets, ingress-nginx, self-signed TLS for a derived nip.io FQDN (or an
     optional user-provided domain), the real NVIDIA GPU Operator, the control plane,
     three-call cluster registration, and the cluster components.
   parameters:
-    - { variable: tenant, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    - { variable: ingressProvider, type: string, required: true, defaultValue: standard, validation: '^(standard|aws)$' }
+    - { variable: tenant, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Tenant name" }
+    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Ingress class" }
+    - variable: ingressProvider
+      label: "Ingress provider"
+      description: Use standard for an IPv4 address. Use aws for an ELB or NLB hostname.
+      type: string
+      required: true
+      defaultValue: standard
+      options:
+        - standard
+        - aws
     # Use host-visible service name for vCluster destinations.
-    - { variable: ingressControllerServiceName, type: string, required: true, defaultValue: runai-ingress-controller, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
+    - { variable: ingressControllerServiceName, type: string, required: true, defaultValue: runai-ingress-controller, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Ingress controller Service name" }
+    - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Storage class" }
     # Keep this version equal to chart versions in `apps/07-control-plane.yaml` and `apps/08-cluster.yaml`.
-    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86" }
-    - { variable: clusterName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
+    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86", label: "NVIDIA Run:ai version" }
+    - { variable: clusterName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "NVIDIA Run:ai cluster name" }
     # Optional. FQDN for the control plane (e.g. runai.example.com). DNS for it and `*.` under it
     # must resolve to the ingress-nginx LoadBalancer address (published output `ingressAddress`).
     # Empty derives `<tenant>.<lb-ip>.nip.io` after the LoadBalancer IP is assigned.
-    - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
-    - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' }
-    - { variable: adminPassword, type: password, required: true }
-    - { variable: dockerServer, type: string, required: true }
-    - { variable: dockerUsername, type: string, required: true }
-    - { variable: runaiRegistryCredentials, type: password, required: true }
-    - { variable: dockerEmail, type: string, required: true }
+    - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Control plane domain" }
+    - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$', label: "Control plane admin username" }
+    - { variable: adminPassword, type: password, required: true, label: "Control plane admin password" }
+    - { variable: dockerServer, type: string, required: true, label: "Image registry server" }
+    - { variable: dockerUsername, type: string, required: true, label: "Image registry username" }
+    - { variable: runaiRegistryCredentials, type: password, required: true, label: "Image registry credentials" }
+    - { variable: dockerEmail, type: string, required: true, label: "Image registry email" }
     # TLS. The default issues a self-signed CA and leaf in-cluster and reuses them across upgrades.
     # Supply a trusted certificate before production use: set `tlsMode: user-provided` plus either
     # `userTlsSecretName` (preferred) or the inline PEM inputs, then set `customCAEnabled: false`
     # if that certificate is publicly trusted.
-    - { variable: tlsMode, type: string, defaultValue: self-signed, validation: '^(self-signed|user-provided)$' }
-    - { variable: userTlsSecretName, type: string }
-    - { variable: userTlsCert, type: multiline }
-    - { variable: userTlsKey, type: password }
-    - { variable: userCaCert, type: multiline }
-    - { variable: customCAEnabled, type: boolean, defaultValue: "true" }
+    - variable: tlsMode
+      label: "TLS mode"
+      type: string
+      defaultValue: self-signed
+      options:
+        - self-signed
+        - user-provided
+    - { variable: userTlsSecretName, type: string, label: "TLS Secret name" }
+    - { variable: userTlsCert, type: multiline, label: "TLS certificate" }
+    - { variable: userTlsKey, type: password, label: "TLS private key" }
+    - { variable: userCaCert, type: multiline, label: "CA certificate" }
+    - { variable: customCAEnabled, type: boolean, defaultValue: "true", label: "Trust bootstrap CA" }
     # Select the node GPU stack owner.
     # `gke` uses the Google driver, containerd configuration, and device plugin.
     # Do not use `standard` on a default GKE GPU pool. The `gpu` task will time out.
     # Use `standard` on a GKE Ubuntu pool with `gpu-driver-version=disabled`.
     # See `apps/06-gpu-operator-skip.yaml`.
-    - { variable: gpuProvider, type: string, required: true, defaultValue: standard, validation: '^(standard|gke)$' }
+    - variable: gpuProvider
+      label: "GPU provider"
+      type: string
+      required: true
+      defaultValue: standard
+      options:
+        - standard
+        - gke
     # Set `gpuDriverEnabled: true` for nodes without NVIDIA drivers.
-    - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false" }
-    - { variable: gpuDevicePluginEnabled, type: boolean, defaultValue: "true" }
-    - { variable: gpuDriverInstallDir, type: string, defaultValue: /run/nvidia/driver }
+    - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false", label: "Install GPU driver" }
+    - { variable: gpuDevicePluginEnabled, type: boolean, defaultValue: "true", label: "Install GPU device plugin" }
+    - { variable: gpuDriverInstallDir, type: string, defaultValue: /run/nvidia/driver, label: "GPU driver install directory" }
 
   tasks:
 
@@ -105,6 +126,7 @@ spec:
         parameters:
           fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else if eq .Values.ingressProvider \"aws\" }}{{ .Outputs.ingress.address }}{{ else }}{{ .Values.tenant }}.{{ .Outputs.ingress.address }}.nip.io{{ end }}"
           loadBalancerAddress: "{{ .Outputs.ingress.address }}"
+          ingressProvider: "{{ .Values.ingressProvider }}"
           adminUsername: "{{ .Values.adminUsername }}"
           adminPassword: "{{ .Values.adminPassword }}"
           customCAEnabled: "{{ .Values.customCAEnabled }}"

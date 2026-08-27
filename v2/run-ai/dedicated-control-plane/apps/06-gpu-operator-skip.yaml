@@ -22,7 +22,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 6] NVIDIA GPU Operator (skipped, provider-managed)'
+  displayName: '[NVIDIA Run:ai Step - 6] NVIDIA GPU Operator (skipped, provider-managed)'
   description: Installs no GPU Operator. Used when the cloud provider manages the node-level GPU stack.
   defaultNamespace: gpu-operator
   config:

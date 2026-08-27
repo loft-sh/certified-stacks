@@ -12,7 +12,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 4] Bootstrap, shared host (endpoint + admin + certs)'
+  displayName: '[NVIDIA Run:ai Step - 4] Bootstrap, shared host (endpoint + admin + certs)'
   description: Publishes the control-plane endpoint and admin Secret, and issues or accepts a TLS pair.
   defaultNamespace: runai
   config:
@@ -26,6 +26,10 @@ spec:
       data:
         fqdn: "{{ .Values.fqdn }}"
         loadBalancerAddress: "{{ .Values.loadBalancerAddress }}"
+        ingressProvider: "{{ .Values.ingressProvider | default "standard" }}"
+        tlsMode: "{{ .Values.tlsMode | default "self-signed" }}"
+        # REST registration consumes this runtime value directly; task outputs cannot drive conditions.
+        tlsInsecure: '{{ eq (.Values.tlsMode | default "self-signed") "self-signed" }}'
         customCAEnabled: "{{ .Values.customCAEnabled | default "true" }}"
       ---
       apiVersion: v1
@@ -369,6 +373,16 @@ spec:
       description: External address of the ingress LoadBalancer, published in the endpoint ConfigMap.
       type: string
       required: true
+    - variable: ingressProvider
+      label: Ingress LoadBalancer address kind
+      # Published so a reader of the ConfigMap knows whether loadBalancerAddress is an IPv4 address
+      # it may wrap in a `nip.io` name. Under `aws` it is an ELB/NLB hostname and it may not.
+      description: Whether loadBalancerAddress is an IPv4 address (`standard`) or a hostname (`aws`).
+      type: string
+      defaultValue: standard
+      options:
+        - standard
+        - aws
     - variable: adminUsername
       label: Control-plane admin username
       type: string
@@ -392,7 +406,9 @@ spec:
       description: Choose self-signed or supplied TLS certificates.
       type: string
       defaultValue: self-signed
-      validation: ^(self-signed|user-provided)$
+      options:
+        - self-signed
+        - user-provided
     - variable: userTlsSecretName
       label: Existing TLS Secret name
       # Secret must be in `runai` and contain tls.crt, tls.key, and optional ca.crt.
@@ -424,7 +440,7 @@ spec:
       label: Hook image pull Secret
       # Secret must be in `runai` on Control Plane Cluster and pull Platform Job image.
       # Leave empty when nodes can pull image without credentials.
-      # Do not use runai-reg-creds. It authenticates to run:ai registry. Kubernetes matches pull
+      # Do not use runai-reg-creds. It authenticates to NVIDIA Run:ai registry. Kubernetes matches pull
       # Secrets by registry host.
-      description: Image pull Secret for hook Jobs.
+      description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
       type: string

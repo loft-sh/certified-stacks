@@ -10,8 +10,8 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 0] Create namespaces and admission prerequisites'
-  description: Creates the namespace used by the Run:AI control-plane backend and bootstrap hooks,
+  displayName: '[NVIDIA Run:ai Step - 0] Create namespaces and admission prerequisites'
+  description: Creates the namespace used by the NVIDIA Run:ai control-plane backend and bootstrap hooks,
     plus the gpu-operator namespace and the scoped pod quota GKE requires there.
   defaultNamespace: runai
   config:
@@ -36,7 +36,7 @@ spec:
       # Without this quota, the `gpu` task waits while workloads report FailedCreate.
       #
       # GKE creates equivalent `gcp-critical-pods` quotas in namespaces it manages.
-      # The run:ai control-plane chart creates `allow-system-critical-pods` in `runai-backend`.
+      # The NVIDIA Run:ai control-plane chart creates `allow-system-critical-pods` in `runai-backend`.
       #
       # This quota lets `gpuProvider: standard` run on GKE with an Ubuntu node pool.
       # Create that pool with `gpu-driver-version=disabled`.

@@ -1,13 +1,14 @@
 # Shared host foundation for central control-plane tenancy. Apply this ONCE per Control Plane Cluster.
 #
-# This Stack installs the shared run:ai control plane and NVIDIA GPU Operator.
+# This Stack installs the shared NVIDIA Run:ai control plane and NVIDIA GPU Operator.
 # Tenant clusters install neither. They read host GPU capacity through vCluster node sync.
 #
 # Name the StackInstance `runai`. The control-plane chart requires release `runai-backend`.
 # The release name is `<instance>-<task>`.
 #
 # Use GPU nodes. Configure the `nvidia` RuntimeClass and tenant node labels before you apply this.
-# Install ingress-nginx first. Pass its LoadBalancer IPv4 address as `hostIngressAddress`.
+# Install ingress-nginx first. Pass its LoadBalancer address as `hostIngressAddress`, and set
+# `ingressProvider: aws` when that address is an ELB/NLB hostname rather than an IPv4 address.
 apiVersion: storage.loft.sh/v1
 kind: StackTemplate
 metadata:
@@ -15,58 +16,87 @@ metadata:
   labels:
     vcluster.com/certified: "true"
 spec:
-  displayName: "run:ai shared host foundation (control plane + GPU Operator)"
+  displayName: "NVIDIA Run:ai shared host foundation (control plane + GPU Operator)"
   description: >-
     Administrator-only. Installs registry credentials, TLS and CA bootstrap, the NVIDIA GPU
-    Operator, and the run:ai self-hosted control plane once on the Control Plane Cluster. Central control-plane
+    Operator, and the NVIDIA Run:ai self-hosted control plane once on the Control Plane Cluster. Central control-plane
     tenant clusters share all of it. Reuses an existing host ingress-nginx.
   parameters:
     # Do not use `tenant`. A shared control plane is not a tenant.
-    - { variable: controlPlaneName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    # IPv4 address of the existing host ingress-nginx LoadBalancer.
-    - { variable: hostIngressAddress, type: string, required: true, validation: '^(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(\.(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$' }
-    # Optional real FQDN. Empty derives `<controlPlaneName>.<hostIngressAddress>.nip.io`.
+    - { variable: controlPlaneName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Control plane name" }
+    # How the existing host ingress-nginx LoadBalancer publishes itself. GCP and Azure hand out an
+    # IPv4 address; AWS hands out an ELB/NLB hostname and never an address, so the `nip.io`
+    # derivation below has nothing to build on. This mirrors `ingressProvider` on the dedicated
+    # Stack, except that here the ingress is a prerequisite, so the value is supplied rather than
+    # read back from a Service this Stack created.
+    - variable: ingressProvider
+      label: "Ingress provider"
+      type: string
+      required: true
+      defaultValue: standard
+      options:
+        - standard
+        - aws
+    # External address of the existing host ingress-nginx LoadBalancer: an IPv4 address under
+    # `standard`, a hostname under `aws`. One parameter cannot vary its own validation by the value
+    # of another, so the pattern admits both and `ingressProvider` decides how it is used.
+    - { variable: hostIngressAddress, type: string, required: true, validation: '^(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(\.(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Host ingress address" }
+    # Optional real FQDN. Under `standard` an empty value derives
+    # `<controlPlaneName>.<hostIngressAddress>.nip.io`; under `aws` it uses the LoadBalancer
+    # hostname as-is.
     # Strongly recommended in production: a nip.io name shared by every tenant can never carry a
     # publicly trusted certificate.
-    - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
-    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' }
-    - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
-    # Keep this version equal to chart versions in `apps/07-control-plane.yaml` and
-    # `apps/08-cluster.yaml`, and to `runaiVersion` on the registration and tenant Stacks.
-    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86" }
+    - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Control plane domain" }
+    - { variable: ingressClass, type: string, required: true, defaultValue: nginx, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Ingress class" }
+    - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Storage class" }
     # Control-plane administrator credentials. These live here and nowhere else: no tenant Stack and
     # no tenant cluster ever receives them.
-    - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' }
-    - { variable: adminPassword, type: password, required: true }
-    - { variable: dockerServer, type: string, required: true }
-    - { variable: dockerUsername, type: string, required: true }
-    - { variable: runaiRegistryCredentials, type: password, required: true }
-    - { variable: dockerEmail, type: string, required: true }
+    - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$', defaultValue: "admin@run.ai", label: "Control plane admin username" }
+    - { variable: adminPassword, type: password, required: true, label: "Control plane admin password" }
+    - { variable: dockerServer, type: string, required: true, defaultValue: "https://runai.jfrog.io", label: "Image registry server" }
+    - { variable: dockerUsername, type: string, required: true, defaultValue: "self-hosted-image-puller-prod", label: "Image registry username", description: "The username must match the subject of the image registry credentials JWT." }
+    - { variable: runaiRegistryCredentials, type: password, required: true, label: "Image registry credentials JWT",
+        description: "See: https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/install-using-helm/preparations#kubernetes" }
+    - { variable: dockerEmail, type: string, required: true, defaultValue: "support@run.ai", label: "Image registry email" }
     # Name a `runai` dockerconfigjson Secret that pulls the vCluster Platform image.
     # Bootstrap Jobs run directly on the Control Plane Cluster.
     # Leave this empty when nodes can pull the image without credentials.
     # Do not use `runai-reg-creds`. Pull secrets match the registry host.
-    - { variable: hookImagePullSecret, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' }
+    - { variable: hookImagePullSecret, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Hook image pull Secret",
+        description: "If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank." }
     # TLS. The default issues a self-signed CA and leaf in-cluster and reuses them across upgrades.
     # Supply a trusted certificate before production use: set `tlsMode: user-provided` plus either
     # `userTlsSecretName` (preferred) or the inline PEM inputs, then set `customCAEnabled: false`
     # if that certificate is publicly trusted.
-    - { variable: tlsMode, type: string, defaultValue: self-signed, validation: '^(self-signed|user-provided)$' }
-    - { variable: userTlsSecretName, type: string }
-    - { variable: userTlsCert, type: multiline }
-    - { variable: userTlsKey, type: password }
-    - { variable: userCaCert, type: multiline }
-    - { variable: customCAEnabled, type: boolean, defaultValue: "true" }
+    - variable: tlsMode
+      label: "TLS mode"
+      type: string
+      defaultValue: self-signed
+      options:
+        - self-signed
+        - user-provided
+    - { variable: userTlsSecretName, type: string, label: "TLS Secret name" }
+    - { variable: userTlsCert, type: multiline, label: "TLS certificate" }
+    - { variable: userTlsKey, type: password, label: "TLS private key" }
+    - { variable: userCaCert, type: multiline, label: "CA certificate" }
+    - { variable: customCAEnabled, type: boolean, defaultValue: "true", label: "Trust bootstrap CA" }
     # Select the node GPU stack owner.
     # `gke` uses the Google driver, containerd configuration, and device plugin.
     # Do not use `standard` on a default GKE GPU pool. The `gpu` task will time out.
     # Use `standard` on a GKE Ubuntu pool with `gpu-driver-version=disabled`.
     # See `apps/06-gpu-operator-skip.yaml`.
-    - { variable: gpuProvider, type: string, required: true, defaultValue: standard, validation: '^(standard|gke)$' }
+    - variable: gpuProvider
+      label: "GPU provider"
+      type: string
+      required: true
+      defaultValue: standard
+      options:
+        - standard
+        - gke
     # Set `gpuDriverEnabled: true` for nodes without NVIDIA drivers.
-    - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false" }
-    - { variable: gpuDevicePluginEnabled, type: boolean, defaultValue: "true" }
-    - { variable: gpuDriverInstallDir, type: string, defaultValue: /run/nvidia/driver }
+    - { variable: gpuDriverEnabled, type: boolean, defaultValue: "false", label: "Install GPU driver" }
+    - { variable: gpuDevicePluginEnabled, type: boolean, defaultValue: "true", label: "Install GPU device plugin" }
+    - { variable: gpuDriverInstallDir, type: string, defaultValue: /run/nvidia/driver, label: "GPU driver install directory" }
 
   tasks:
 
@@ -97,9 +127,10 @@ spec:
       app:
         templateRef: { name: runai-step-04-bootstrap-host }
         parameters:
-          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.controlPlaneName }}.{{ .Values.hostIngressAddress }}.nip.io{{ end }}"
-          additionalDnsName: "*.{{ .Values.hostIngressAddress }}.nip.io"
+          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else if eq .Values.ingressProvider \"aws\" }}{{ .Values.hostIngressAddress }}{{ else }}{{ .Values.controlPlaneName }}.{{ .Values.hostIngressAddress }}.nip.io{{ end }}"
+          additionalDnsName: "{{ if eq .Values.ingressProvider \"aws\" }}{{ else }}*.{{ .Values.hostIngressAddress }}.nip.io{{ end }}"
           loadBalancerAddress: "{{ .Values.hostIngressAddress }}"
+          ingressProvider: "{{ .Values.ingressProvider }}"
           adminUsername: "{{ .Values.adminUsername }}"
           adminPassword: "{{ .Values.adminPassword }}"
           customCAEnabled: "{{ .Values.customCAEnabled }}"
@@ -144,7 +175,7 @@ spec:
       app:
         templateRef: { name: runai-step-07-control-plane }
         parameters:
-          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else }}{{ .Values.controlPlaneName }}.{{ .Values.hostIngressAddress }}.nip.io{{ end }}"
+          fqdn: "{{ if .Values.domain }}{{ .Values.domain }}{{ else if eq .Values.ingressProvider \"aws\" }}{{ .Values.hostIngressAddress }}{{ else }}{{ .Values.controlPlaneName }}.{{ .Values.hostIngressAddress }}.nip.io{{ end }}"
           ingressClass: "{{ .Values.ingressClass }}"
           storageClass: "{{ .Values.storageClass }}"
           customCAEnabled: "{{ .Values.customCAEnabled }}"

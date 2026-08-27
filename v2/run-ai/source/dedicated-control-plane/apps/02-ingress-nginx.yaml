@@ -7,7 +7,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 2] Ingress NGINX'
+  displayName: '[NVIDIA Run:ai Step - 2] Ingress NGINX'
   description: Ingress controller exposed through a LoadBalancer service.
   defaultNamespace: ingress-nginx
   wait: true
@@ -48,4 +48,6 @@ spec:
       type: string
       required: true
       defaultValue: standard
-      validation: ^(standard|aws)$
+      options:
+        - standard
+        - aws

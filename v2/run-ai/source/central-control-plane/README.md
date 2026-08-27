@@ -1,6 +1,6 @@
-# run:ai Central Control-Plane Stack
+# NVIDIA Run:ai Central Control-Plane Stack
 
-Central control-plane tenancy shares one run:ai control plane and one NVIDIA GPU Operator among tenant clusters.
+Central control-plane tenancy shares one NVIDIA Run:ai control plane and one NVIDIA GPU Operator among tenant clusters.
 An administrator installs these shared components once. Each tenant runs its own cluster agent,
 Prometheus operator, registry credentials, and workloads. Each tenant registers with the shared control plane.
 
@@ -15,15 +15,15 @@ pattern. `ray-io/soft-multitenancy` uses this pattern for the KubeRay operator.
 Control Plane Cluster
   ingress-nginx                        prerequisite, shared, not installed here
   NVIDIA GPU Operator                  installed ONCE by run-ai-central-control-plane-host
-  run:ai control plane                 installed ONCE by run-ai-central-control-plane-host
+  NVIDIA Run:ai control plane                 installed ONCE by run-ai-central-control-plane-host
     +-- runai-backend: postgres, NATS, Thanos, tenants-manager
     +-- runai-control-plane-admin      admin credentials live here and nowhere else
   run-ai-central-control-plane-registration             one StackInstance per tenant, created by the cluster
     +-- runai-tenant-facts-<slug>      FQDN, cluster URL, UID, client secret, CA setting
 
   Tenant cluster "tenant-a"            nodes labelled tenant=tenant-a, synced in
-    +-- run:ai cluster agent           registered as run:ai cluster "tenant-a"
-    +-- Prometheus operator (CRDs)     the run:ai operator creates the Prometheus instance
+    +-- NVIDIA Run:ai cluster agent           registered as NVIDIA Run:ai cluster "tenant-a"
+    +-- Prometheus operator (CRDs)     the NVIDIA Run:ai operator creates the Prometheus instance
     +-- runai-tenant-facts             synced in; the tenant Stack's only source of values
     +-- runai-ca-cert                  synced from the host; trusts the control plane
     +-- runai-reg-creds-host           synced from the host; the JFrog credential
@@ -33,7 +33,7 @@ Control Plane Cluster
     +-- ...
 ```
 
-Each tenant gets an isolated Kubernetes API, RBAC, namespaces, and run:ai cluster identity. It does
+Each tenant gets an isolated Kubernetes API, RBAC, namespaces, and NVIDIA Run:ai cluster identity. It does
 not get isolated compute or network. See [Isolation](#isolation).
 
 ## Control Plane Cluster prerequisites
@@ -41,12 +41,28 @@ not get isolated compute or network. See [Isolation](#isolation).
 | Requirement | Details |
 | --- | --- |
 | vCluster Platform | With StackInstance support, and `kubectl` access to the target cluster. |
-| ingress-nginx | Already installed, IngressClass `nginx`, with a LoadBalancer IPv4 address. This bundle does not install it. |
+| ingress-nginx | Already installed, IngressClass `nginx`, with a LoadBalancer address. This bundle does not install it. See [Ingress LoadBalancer address](#ingress-loadbalancer-address). |
 | Storage class | For the shared control plane's persistent volumes. |
 | GPU nodes | With NVIDIA drivers, and the `nvidia` RuntimeClass on the Control Plane Cluster. |
 | Tenant node labels | Every GPU node a tenant may use must carry that tenant's label. See [Node labelling](#node-labelling). |
 | JFrog token | Can pull images from `runai.jfrog.io`. |
 | Job image | Nodes can pull the Platform-provided job image. It must include `openssl`, `kubectl`, `jq`, `curl`, and `sh`. For a private registry, see [Pulling the job image](#pulling-the-job-image). |
+
+### Ingress LoadBalancer address
+
+The host Stack takes the existing ingress-nginx LoadBalancer's external address as
+`hostIngressAddress`, and `ingressProvider` says which kind it is:
+
+| `ingressProvider` | `hostIngressAddress` | Derived FQDN when `domain` is empty |
+| --- | --- | --- |
+| `standard` (default) | LoadBalancer IPv4 address | `<controlPlaneName>.<address>.nip.io` |
+| `aws` | ELB/NLB hostname | the hostname itself |
+
+GCP and Azure publish an address, so `standard` fits. AWS publishes a hostname and never an address,
+so `nip.io` has nothing to wrap: set `ingressProvider: aws`, and set `tenantClusterDomain` on every
+tenant, because tenant domains derive from the same value. A registration that leaves it empty under
+`aws` fails validation naming `clusterDomain` rather than registering an unresolvable domain.
+`tests/validate-host-ingress.sh` reports which kind the cluster has.
 
 ### Pulling the job image
 
@@ -68,7 +84,7 @@ kubectl -n vcluster-platform get pod -l app=loft \
 If that registry needs credentials, create a pull Secret before you apply the host Stack and pass
 its name as `hookImagePullSecret`. Two Stacks need it, and their Jobs run in different namespaces:
 the host Stack's bootstrap in `runai`, and all three registration steps in `runai-backend`. Use the
-same Secret name in both so one input value serves both Stacks.
+same Secret name in both so one parameter value serves both Stacks.
 
 ```bash
 for ns in runai runai-backend; do
@@ -87,7 +103,7 @@ anonymously.
 The cluster template must receive this registration value. It cannot discover it because the
 registration's first Job needs a pull credential before it can read a value.
 
-This is not `runai-reg-creds`. That Secret authenticates to `runai.jfrog.io` for the run:ai product
+This is not `runai-reg-creds`. That Secret authenticates to `runai.jfrog.io` for the NVIDIA Run:ai product
 images, and Kubernetes matches pull secrets by registry host, so it does nothing for a Platform
 image hosted elsewhere. Both can be needed at once.
 
@@ -140,7 +156,7 @@ See [Pulling the job image](#pulling-the-job-image).
 
 The registration Stack takes no credentials or control-plane FQDN. It reads
 `runai-control-plane-admin` from `runai-backend`. Its `discover` task reads the FQDN, ingress address,
-and CA setting from `runai/runai-control-plane-endpoint`. The run:ai cluster domain is
+TLS mode, and CA setting from `runai/runai-control-plane-endpoint`. The NVIDIA Run:ai cluster domain is
 `<slug>.<address>.nip.io`. It is not a vCluster API server URL.
 
 The last task writes `runai-backend/runai-tenant-facts-<slug>`.
@@ -152,7 +168,7 @@ The cluster template also syncs the control-plane CA. See [Trusting the control 
 
 The tenant cluster does not install the control plane or GPU Operator.
 `sync.fromHost.nodes` copies labeled host nodes, GPU capacity, and NFD/GFD labels to the tenant API server.
-`sync.fromHost.runtimeClasses` copies the `nvidia` RuntimeClass for run:ai GPU workloads.
+`sync.fromHost.runtimeClasses` copies the `nvidia` RuntimeClass for NVIDIA Run:ai GPU workloads.
 
 ### Registering a tenant ahead of its cluster
 
@@ -165,8 +181,8 @@ register a tenant whose name differs from its cluster name. Copy
 registration. It maps the facts Secret to existing registration. Leave it empty unless registration
 already exists. Otherwise, the tenant waits for a facts Secret that no task writes.
 
-`tenantSlug` must be unique across the control plane. Registration matches an existing run:ai cluster
-by that name, so two registrations sharing a slug adopt the same run:ai cluster and either one can
+`tenantSlug` must be unique across the control plane. Registration matches an existing NVIDIA Run:ai cluster
+by that name, so two registrations sharing a slug adopt the same NVIDIA Run:ai cluster and either one can
 deregister the other. Deriving it from the cluster name is what normally makes that automatic.
 
 ## Node labelling
@@ -248,6 +264,12 @@ naming whichever never arrived. Set `requireControlPlaneCA: "false"` on the tena
 control plane serves a publicly trusted certificate: no `runai-ca-cert` is created in that case, and
 waiting for one would never return.
 
+`requireControlPlaneCA` must equal the host Stack's `customCAEnabled`. It is the one value a tenant
+still restates, because it decides what `discover` waits for and the host's value only arrives in
+the facts Secret `discover` is waiting on. `discover` therefore compares the two before it waits,
+and fails naming both. The registration Stack takes no `tlsMode`: it reads the host's from the
+endpoint ConfigMap, so those two cannot disagree at all.
+
 ### Use a trusted certificate
 
 Set `tlsMode: user-provided` on the host Stack. It then skips `openssl` and publishes what you
@@ -255,7 +277,7 @@ supply, either an existing Secret in the `runai` namespace with keys `tls.crt`, 
 optionally `ca.crt`:
 
 ```yaml
-inputs:
+parameters:
   tlsMode: user-provided
   userTlsSecretName: my-runai-tls
 ```
@@ -264,7 +286,7 @@ or inline PEM. Omit `userCaCert` when the chain is publicly trusted, and set `cu
 on both the host and tenant Stacks. The Secret sync is then unnecessary but harmless.
 
 A `nip.io` FQDN cannot get a publicly trusted certificate, and under central control-plane tenancy that one name is
-shared by every tenant. Set the host Stack's `domain` input to a domain you control before you supply
+shared by every tenant. Set the host Stack's `domain` parameter to a domain you control before you supply
 a trusted certificate.
 
 ### Verify
@@ -278,13 +300,17 @@ TLS_MODE=user-provided bash tests/verify-certs.sh
 
 ## Isolation
 
-Central control-plane tenancy isolates the Kubernetes API, RBAC, namespaces, and run:ai cluster identity. It does not
-isolate compute or network:
+Central control-plane tenancy isolates Kubernetes API, RBAC, namespaces, and NVIDIA Run:ai cluster identity. Network
+isolation requires host CNI enforcement; compute remains shared:
 
 - Tenants share host nodes. Node labels partition them. They are a policy, not a boundary.
-- `policies.networkPolicy` is disabled, so tenants are not network-isolated from each other or from
-  host services.
-- Tenants share one run:ai control plane. Separation inside it is run:ai's own, through its projects
+- `policies.networkPolicy` is enabled. Host CNI must enforce Kubernetes NetworkPolicy for this control
+  to isolate tenant traffic. Tenant workloads may send HTTPS only to controller Pods in
+  `ingressControllerNamespace` (default `ingress-nginx`): a public control-plane FQDN can DNAT to
+  those Pods before CNI policy evaluation.
+- `networking.advanced.fallbackHostCluster` remains unset (`false` by default). Tenants reach shared
+  control plane through public ingress DNS; unresolved names are never forwarded to host DNS.
+- Tenants share one NVIDIA Run:ai control plane. Separation inside it is NVIDIA Run:ai's own, through its projects
   and departments.
 - No tenant receives control-plane administrator credentials, a TLS private key, or cluster-wide node
   permission. Each tenant does hold its own per-cluster agent OIDC secret, but as a Secret synced into
@@ -300,7 +326,7 @@ Use `dedicated-control-plane/` where compute isolation is required.
 ## Known gaps
 
 - **GPU metrics.** `dcgm-exporter` now runs on the Control Plane Cluster in namespace `gpu-operator`,
-  outside every tenant's API server, so a tenant's Prometheus cannot scrape it and run:ai GPU
+  outside every tenant's API server, so a tenant's Prometheus cannot scrape it and NVIDIA Run:ai GPU
   utilisation views may be empty. Allocation still works because synced node objects provide
   capacity. Exposing the exporter to tenants would leak every tenant's GPU metrics unless each scrape
   config filters to its own nodes. This is a policy, not a boundary.
@@ -334,8 +360,14 @@ from a namespace its Apps deployed into, which for a `templateRef` task is the r
 `defaultNamespace`, not the `namespace` parameter. Point either one somewhere else and every
 registration output fails to capture.
 
-Keep `runaiVersion` equal across `stacktemplate-host.yaml`, `stacktemplate-registration.yaml`, and
-the chart versions in `apps/07-control-plane.yaml` and `apps/08-cluster.yaml`.
+`runaiVersion` must equal the chart versions in `apps/07-control-plane.yaml` and
+`apps/08-cluster.yaml`. It cannot drive them: the Platform renders Go templates in an App's `values`
+and `manifests`, never in its chart coordinates, so the version is pinned in the App files and
+`runaiVersion` only feeds the `cluster-install-info?version=` query. A bump has to move all seven
+sites together -- four chart pins, the `stacktemplate-registration.yaml` and
+`dedicated-control-plane/stacktemplate.yaml` defaults, and `example/stackinstance-registration.yaml`.
+`test-certified-manifests.sh` fails when they disagree. The host Stack takes no `runaiVersion`; it
+registers nothing.
 
 Control-plane chart source:
 
@@ -374,8 +406,8 @@ kubectl delete stackinstance runai -n p-default
 
 **Deleting the host foundation is destructive and irreversible.** It uninstalls the shared control
 plane and drops the PostgreSQL, NATS, and Thanos Receive PVCs, which are set to delete with the
-release. Every tenant loses its control plane and all run:ai data at once, and every remaining
-registration instance is left pointing at a dead API. Confirm the run:ai UI lists zero clusters
+release. Every tenant loses its control plane and all NVIDIA Run:ai data at once, and every remaining
+registration instance is left pointing at a dead API. Confirm the NVIDIA Run:ai UI lists zero clusters
 first.
 
 Removal does not delete namespaces or Prometheus release PVCs. Check remaining resources before you

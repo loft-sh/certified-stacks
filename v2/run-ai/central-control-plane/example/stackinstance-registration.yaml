@@ -3,7 +3,7 @@
 # Set the cluster template `tenantSlug` to use this registration.
 #
 # Name each instance `runai-reg-<tenantSlug>`.
-# `tenantSlug` must be unique. Duplicate registrations can deregister the same run:ai cluster.
+# `tenantSlug` must be unique. Duplicate registrations can deregister the same NVIDIA Run:ai cluster.
 #
 # Keep this instance for the tenant lifetime. Its pre-delete hook deregisters the tenant cluster.
 # Delete the tenant cluster before this instance.
@@ -18,7 +18,7 @@ kind: StackInstance
 metadata:
   name: runai-reg-tenant-a
 spec:
-  displayName: "run:ai registration for tenant-a"
+  displayName: "NVIDIA Run:ai registration for tenant-a"
   owner:
     user: admin
   destination:
@@ -32,10 +32,8 @@ spec:
     # Stack published, and the tenant reads the result back out of the facts Secret, so there is no
     # second value to keep in step. Set it only for a real domain you control.
     # tenantClusterDomain: tenant-a.runai.example.com
-    # Keep equal to runaiVersion on the host and tenant Stacks.
+    # Keep equal to the chart versions the Apps pin. Only this Stack takes the value.
     runaiVersion: "2.24.86"
-    # Match the host Stack's tlsMode.
-    tlsMode: self-signed
     # Optional, and only when the vCluster Platform image is from a private registry or an
     # air-gapped mirror. Name a dockerconfigjson Secret you create in namespace `runai-backend` on
     # this cluster BEFORE applying. Set the same value on the host StackInstance, which needs the

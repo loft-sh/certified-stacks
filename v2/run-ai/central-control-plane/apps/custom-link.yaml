@@ -12,14 +12,15 @@ spec:
     chart: {}
     manifests: |2
       {{- if .Values.createCustomLinkJob }}
-      {{- $vciName := .Values.loft.virtualClusterName }}
+      {{- $loft := .Values.loft | default dict }}
+      {{- $vciName := required "runai-custom-link-central-control-plane requires loft.virtualClusterName" $loft.virtualClusterName }}
       # Platform renders this App as a Helm release.
       # `.Values.loft.space` is the tenant space namespace and release namespace.
-      {{- $spaceNamespace := .Values.loft.space }}
+      {{- $spaceNamespace := required "runai-custom-link-central-control-plane requires loft.space" $loft.space }}
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
-      # Platform stores each VirtualClusterInstance in its project namespace.
-      {{- $projectNamespace := printf "%s%s" .Values.projectNamespacePrefix .Values.loft.project }}
+      # Platform resolves this from its Project object, rather than exposing its namespace prefix.
+      {{- $projectNamespace := required "runai-custom-link-central-control-plane requires loft.projectNamespace" $loft.projectNamespace }}
       # Each VCI has one retrying Job.
       # Its TTL removes helper RBAC from the tenant space namespace.
       # Project and Ingress RBAC use Role-owned RoleBindings because ownerReferences cannot cross namespaces.
@@ -71,7 +72,8 @@ spec:
         name: {{ $helperName }}
       ---
       # This Role and binding live beside the VCI in the project namespace. Its binding becomes a
-      # dependent of this Role, then the Job deletes the Role once it has patched its VCI.
+      # dependent of this Role. Delete the Role only after a pod sets the VCI link; failed pods
+      # retry with this access intact.
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
       metadata:
@@ -112,7 +114,8 @@ spec:
         name: {{ $helperName }}
       ---
       # This Role and binding live beside the shared ingress. Its binding becomes a dependent of
-      # this Role, then the Job deletes the Role after it patches its VCI.
+      # this Role. Delete the Role only after a pod sets the VCI link; failed pods retry with this
+      # access intact.
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
       metadata:
@@ -252,6 +255,13 @@ spec:
                       # Last host API call: GC removes the host RoleBinding after this Role is gone.
                       kubectl -n "$RUNAI_NAMESPACE" delete role "$HELPER_NAME" --wait=false --ignore-not-found >/dev/null
                     }
+                    cleanup_access() {
+                      [ "${link_complete:-}" = true ] || return 0
+                      cleanup_ingress_access || true
+                      cleanup_project_access || true
+                    }
+                    trap cleanup_access 0
+                    trap 'exit 1' HUP INT TERM
 
                     install_local_cleanup_tree || { echo "[link] cannot install local cleanup ownership" >&2; exit 1; }
                     install_project_cleanup_tree || { echo "[link] cannot install project cleanup ownership" >&2; exit 1; }
@@ -270,8 +280,7 @@ spec:
                     EOF
                     install_ingress_cleanup_tree || { echo "[link] cannot install ingress cleanup ownership" >&2; exit 1; }
                     if "$has_runai_link"; then
-                      cleanup_ingress_access
-                      cleanup_project_access
+                      link_complete=true
                       echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: RunAI_UI custom link already set"
                       exit 0
                     fi
@@ -283,7 +292,7 @@ spec:
                     # derived nip.io name otherwise, so accept either form here.
                     host="$(kubectl -n "$RUNAI_NAMESPACE" get ingress -l "$INGRESS_SELECTOR" -o json 2>/dev/null \
                       | jq -r '[.items[].spec.rules[]?.host | select(type == "string")] | sort | .[0] // empty')"
-                    [ -n "$host" ] || { echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: shared Run:ai Ingress not ready" >&2; exit 1; }
+                    [ -n "$host" ] || { echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: shared NVIDIA Run:ai Ingress not ready" >&2; exit 1; }
                     case "$host" in
                       *[!a-z0-9.-]*|-*|.*|*..*) echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: refusing malformed host '$host'" >&2; exit 1 ;;
                     esac
@@ -295,9 +304,8 @@ spec:
                     fi
                     patch="$(jq -cn --arg annotation "$annotation" --arg value "$link_value" '{metadata: {annotations: {($annotation): $value}}}')"
                     kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.storage.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
+                    link_complete=true
                     echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: set $annotation to RunAI_UI=https://$host"
-                    cleanup_ingress_access
-                    cleanup_project_access
                 volumeMounts:
                   - name: tmp
                     mountPath: /tmp
@@ -305,28 +313,22 @@ spec:
               - name: tmp
                 emptyDir: {}
       {{- end }}
-  description: Fills one VirtualClusterInstance's RunAI_UI custom link from the shared Run:ai
+  description: Fills one VirtualClusterInstance's RunAI_UI custom link from the shared NVIDIA Run:ai
     Ingress. Referenced from a VirtualClusterTemplate's spaceTemplate.apps, which is what gives
     it the running Platform's own image.
-  displayName: Run:ai Custom Link
+  displayName: NVIDIA Run:ai Custom Link
   parameters:
   - defaultValue: "true"
     description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
-    label: Create Run:ai custom-link Job
+    label: Create NVIDIA Run:ai custom-link Job
     type: boolean
     variable: createCustomLinkJob
-  - description: Name of the Control Plane Cluster the shared run:ai control plane runs on.
+  - description: Name of the Control Plane Cluster the shared NVIDIA Run:ai control plane runs on.
     label: Control Plane Cluster
     required: true
     type: string
     variable: controlPlaneClusterName
-  - description: (Optional) Name of an imagePullSecret needed to pull the Platform image.
+  - description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
     label: Tenant image pull Secret
     type: string
     variable: tenantImagePullSecret
-  - defaultValue: "p-"
-    description: Prefix Platform uses for project namespaces.
-    label: Project namespace prefix
-    type: string
-    validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
-    variable: projectNamespacePrefix

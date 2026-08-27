@@ -4,7 +4,7 @@
 # Apply this StackInstance to a tenant cluster, not the Control Plane Cluster.
 # Apply the host foundation and tenant registration first.
 #
-# This Stack reads all values from synced Secrets. It has no inputs.
+# This Stack reads all values from synced Secrets. It needs almost no parameters.
 # Copy the three `sync.fromHost.secrets.mappings` entries before you use this file.
 # `discover` fails when a required Secret does not arrive.
 #
@@ -14,7 +14,7 @@ kind: StackInstance
 metadata:
   name: runai
 spec:
-  displayName: "run:ai central-control-plane tenant"
+  displayName: "NVIDIA Run:ai central-control-plane tenant"
   owner:
     user: admin
   destination:
@@ -22,7 +22,7 @@ spec:
       name: "<TENANT_CLUSTER>"
   templateRef:
     name: run-ai-central-control-plane
-  # No inputs. Defaults cover IngressClass `nginx` and waiting for the control plane's CA. Set this
+  # Defaults cover IngressClass `nginx` and waiting for the control plane's CA. Set this
   # only when the control plane serves a publicly trusted certificate, in which case no
   # `runai-ca-cert` is ever created and waiting for one would never return:
   # parameters:

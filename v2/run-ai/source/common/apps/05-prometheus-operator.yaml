@@ -6,7 +6,7 @@ metadata:
   labels:
     runai.loft.sh/infra: "true"
 spec:
-  displayName: '[Run:AI Step - 5] Prometheus Operator'
+  displayName: '[NVIDIA Run:ai Step - 5] Prometheus Operator'
   description: Installs Prometheus CRDs and operator only; runai-cluster owns its Prometheus instance.
   defaultNamespace: monitoring
   wait: true

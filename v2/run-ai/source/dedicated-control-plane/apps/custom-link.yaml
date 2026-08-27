@@ -1,4 +1,4 @@
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-custom-link
@@ -12,15 +12,17 @@ spec:
     chart: {}
     manifests: |2
       {{- if .Values.createCustomLinkJob }}
-      {{- $vciName := .Values.loft.virtualClusterName }}
-      {{- $spaceNamespace := .Values.loft.space }}
+      {{- $loft := .Values.loft | default dict }}
+      {{- $vciName := required "runai-custom-link requires loft.virtualClusterName" $loft.virtualClusterName }}
+      {{- $spaceNamespace := required "runai-custom-link requires loft.space" $loft.space }}
       {{- $helperID := printf "%s/%s" $spaceNamespace $vciName }}
       {{- $helperName := printf "runai-link-%s" ($helperID | sha256sum | trunc 16) }}
-      {{- $projectNamespace := printf "%s%s" .Values.projectNamespacePrefix .Values.loft.project }}
+      {{- $projectNamespace := required "runai-custom-link requires loft.projectNamespace" $loft.projectNamespace }}
       # Each VCI has one retrying Job.
       # Job ownerReferences remove its space-namespace RBAC after the Job completes.
       # An ownerReference cannot cross namespaces.
-      # The project Role owns its RoleBinding. The Job deletes the Role after it patches the VCI.
+      # The project Role owns its RoleBinding. Delete it only after a pod sets the VCI link; failed
+      # pods retry with this access intact.
       apiVersion: v1
       kind: ServiceAccount
       metadata:
@@ -211,6 +213,12 @@ spec:
                       # Last project-namespace call: GC removes the RoleBinding once this Role is gone.
                       kubectl -n "$PROJECT_NAMESPACE" delete role "$HELPER_NAME" --wait=false --ignore-not-found >/dev/null
                     }
+                    cleanup_access() {
+                      [ "${link_complete:-}" = true ] || return 0
+                      cleanup_project_access || true
+                    }
+                    trap cleanup_access 0
+                    trap 'exit 1' HUP INT TERM
 
                     install_space_cleanup_tree || { echo "[link] cannot install space cleanup ownership" >&2; exit 1; }
                     install_project_cleanup_tree || { echo "[link] cannot install project cleanup ownership" >&2; exit 1; }
@@ -228,7 +236,7 @@ spec:
                     $current
                     EOF
                     if "$has_runai_link"; then
-                      cleanup_project_access
+                      link_complete=true
                       echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: RunAI_UI custom link already set"
                       exit 0
                     fi
@@ -259,7 +267,7 @@ spec:
                       --request-timeout=20s \
                       -n "$RUNAI_NAMESPACE" get ingress -l "$INGRESS_SELECTOR" -o json 2>/dev/null \
                       | jq -r --arg expected "$EXPECTED_HOST" '[ .items[].spec.rules[]?.host | select(type == "string") | select($expected == "" or . == $expected) ] | sort | .[0] // empty')"
-                    [ -n "$host" ] || { echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: Run:ai Ingress not ready" >&2; exit 1; }
+                    [ -n "$host" ] || { echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: NVIDIA Run:ai Ingress not ready" >&2; exit 1; }
                     case "$host" in
                       *[!a-z0-9.-]*|-*|.*|*..*) echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: refusing malformed host '$host'" >&2; exit 1 ;;
                     esac
@@ -271,8 +279,8 @@ spec:
                     fi
                     patch="$(jq -cn --arg annotation "$annotation" --arg value "$link_value" '{metadata: {annotations: {($annotation): $value}}}')"
                     kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.storage.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
+                    link_complete=true
                     echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: set $annotation to RunAI_UI=https://$host"
-                    cleanup_project_access
                 volumeMounts:
                   - name: tmp
                     mountPath: /tmp
@@ -280,27 +288,21 @@ spec:
               - name: tmp
                 emptyDir: {}
       {{- end }}
-  description: Fills one VirtualClusterInstance's RunAI_UI custom link once its Run:ai Ingress
+  description: Fills one VirtualClusterInstance's RunAI_UI custom link once its NVIDIA Run:ai Ingress
     is ready. Referenced from a VirtualClusterTemplate's spaceTemplate.apps, which is what gives
     it the running Platform's own image.
-  displayName: Run:ai Custom Link
+  displayName: NVIDIA Run:ai Custom Link
   parameters:
   - defaultValue: "true"
     description: Create one temporary Job that fills this VCI's RunAI_UI link after ingress is ready.
-    label: Create Run:ai custom-link Job
+    label: Create NVIDIA Run:ai custom-link Job
     type: boolean
     variable: createCustomLinkJob
   - description: Control-plane domain the Stack was given. Empty accepts whichever host the Stack derived.
     label: Control-plane domain
     type: string
     variable: domain
-  - description: (Optional) Name of an imagePullSecret needed to pull the Platform image.
+  - description: If the vCluster Platform image requires a pull secret, specify the Secret name here; otherwise leave blank.
     label: Tenant image pull Secret
     type: string
     variable: tenantImagePullSecret
-  - defaultValue: "p-"
-    description: Prefix Platform uses for project namespaces.
-    label: Project namespace prefix
-    type: string
-    validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
-    variable: projectNamespacePrefix
