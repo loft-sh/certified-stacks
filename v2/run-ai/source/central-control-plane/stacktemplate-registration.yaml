@@ -58,7 +58,7 @@ spec:
     # This only feeds the `cluster-install-info?version=` query below; a chart version cannot be
     # templated. `test-certified-manifests.sh` fails when the two disagree. Neither the host Stack
     # nor the tenant Stack takes this value.
-    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86", label: "NVIDIA Run:ai version" }
+    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.26", label: "NVIDIA Run:ai version" }
     # Name a `runai-backend` dockerconfigjson Secret that pulls the vCluster Platform image.
     # Registration Jobs run on the Control Plane Cluster.
     # Leave this empty when nodes can pull the image without credentials.

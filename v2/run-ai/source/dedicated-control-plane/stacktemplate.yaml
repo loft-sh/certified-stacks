@@ -30,7 +30,7 @@ spec:
     - { variable: ingressControllerServiceName, type: string, required: true, defaultValue: runai-ingress-controller, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "Ingress controller Service name" }
     - { variable: storageClass, type: string, required: true, validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Storage class" }
     # Keep this version equal to chart versions in `apps/07-control-plane.yaml` and `apps/08-cluster.yaml`.
-    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.24.86", label: "NVIDIA Run:ai version" }
+    - { variable: runaiVersion, type: string, required: true, defaultValue: "2.26", label: "NVIDIA Run:ai version" }
     - { variable: clusterName, type: string, required: true, defaultValue: runai, validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', label: "NVIDIA Run:ai cluster name" }
     # Optional. FQDN for the control plane (e.g. runai.example.com). DNS for it and `*.` under it
     # must resolve to the ingress-nginx LoadBalancer address (published output `ingressAddress`).

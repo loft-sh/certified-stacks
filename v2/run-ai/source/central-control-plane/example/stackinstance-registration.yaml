@@ -33,7 +33,7 @@ spec:
     # second value to keep in step. Set it only for a real domain you control.
     # tenantClusterDomain: tenant-a.runai.example.com
     # Keep equal to the chart versions the Apps pin. Only this Stack takes the value.
-    runaiVersion: "2.24.86"
+    runaiVersion: "2.26"
     # Optional, and only when the vCluster Platform image is from a private registry or an
     # air-gapped mirror. Name a dockerconfigjson Secret you create in namespace `runai-backend` on
     # this cluster BEFORE applying. Set the same value on the host StackInstance, which needs the

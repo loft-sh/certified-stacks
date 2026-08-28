@@ -16,7 +16,7 @@ spec:
   config:
     chart:
       name: runai-cluster
-      version: "2.24.86"
+      version: "2.26"
       repoURL: https://runai.jfrog.io/artifactory/api/helm/run-ai-charts
     values: |-
       controlPlane:
