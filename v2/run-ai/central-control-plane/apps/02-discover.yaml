@@ -12,7 +12,7 @@
 # The wait fails this task when an object does not arrive.
 # Without the wait, the tenant Stack can start before vCluster syncs `runai-ca-cert`.
 # The NVIDIA Run:ai agent then reports a TLS error later.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-02-discover

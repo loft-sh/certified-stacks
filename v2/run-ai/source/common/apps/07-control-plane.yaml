@@ -3,7 +3,7 @@
 # Keep chart version here. Chart fields do not use Go templates.
 # Keep `runaiVersion` equal to chart version.
 # Use `runai-control-plane-admin` Secret for admin password. Do not use a parameter.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-07-control-plane

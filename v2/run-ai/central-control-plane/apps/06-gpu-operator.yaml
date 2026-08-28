@@ -1,7 +1,7 @@
 # Use GPU nodes for this App.
 # Keep chart version here. Chart fields do not use Go templates.
 # Configure `nvidia` RuntimeClass and GPU node labels before you apply this App.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-06-gpu-operator

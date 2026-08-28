@@ -1,5 +1,5 @@
 # Wait for ingress-nginx admission webhook before installing control-plane Ingresses.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-03-ingress-admission-ready

@@ -5,7 +5,7 @@
 #
 # Set `runaiRegistryCredentials`, `storageClass`, `hostIngressAddress`, and administrator credentials before you apply.
 # Tenant Stacks and tenant clusters do not receive administrator credentials.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackInstance
 metadata:
   name: runai

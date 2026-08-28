@@ -15,7 +15,7 @@
 # Use this App for default COS pools with Google-managed drivers.
 # For a GKE Ubuntu pool with `gpu-driver-version=disabled`, use `gpuProvider: standard`.
 # Step 0 creates the required system-critical pod quota for that configuration.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-06-gpu-operator-skip

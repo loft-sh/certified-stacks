@@ -19,11 +19,11 @@
 # `discover` waits until the registration publishes the tenant facts Secret.
 #
 # This Stack has no control-plane administrator credentials or cluster-wide node permissions.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackTemplate
 metadata:
   name: run-ai-central-control-plane
-  labels:
+  annotations:
     vcluster.com/certified: "true"
 spec:
   displayName: "NVIDIA Run:ai central-control-plane tenant (shared control plane and GPU Operator)"

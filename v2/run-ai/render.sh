@@ -112,7 +112,7 @@ PY
 done
 
 grep -q '^  name: run-ai-dedicated-control-plane$' "$dedicated/stacktemplate.yaml"
-grep -q '^    vcluster.com/certified: "true"$' "$dedicated/stacktemplate.yaml"
+grep -A1 '^  annotations:$' "$dedicated/stacktemplate.yaml" | grep -q '^    vcluster.com/certified: "true"$'
 grep -q 'variable: ingressProvider' "$dedicated/stacktemplate.yaml"
 grep -q 'name: ingress-ready' "$dedicated/stacktemplate.yaml"
 grep -qF '{{ if eq .Values.ingressProvider "aws" }}' "$dedicated/apps/02-ingress-nginx.yaml"
@@ -120,14 +120,14 @@ test ! -e "$dedicated/stacktemplate-aws.yaml"
 test ! -e "$dedicated/apps/02-ingress-nginx-aws.yaml"
 
 grep -q '^  name: run-ai-central-control-plane$' "$central/stacktemplate.yaml"
-grep -q '^    vcluster.com/certified: "true"$' "$central/stacktemplate.yaml"
+grep -A1 '^  annotations:$' "$central/stacktemplate.yaml" | grep -q '^    vcluster.com/certified: "true"$'
 grep -q 'awaitSecrets: "runai-tenant-facts,runai-reg-creds-host' "$central/stacktemplate.yaml"
 
 # Central renders three StackTemplates: shared host foundation, per-tenant registration, tenant runtime.
 grep -q '^  name: run-ai-central-control-plane-host$' "$central/stacktemplate-host.yaml"
-grep -q '^    vcluster.com/certified: "true"$' "$central/stacktemplate-host.yaml"
+grep -A1 '^  annotations:$' "$central/stacktemplate-host.yaml" | grep -q '^    vcluster.com/certified: "true"$'
 grep -q '^  name: run-ai-central-control-plane-registration$' "$central/stacktemplate-registration.yaml"
-grep -q '^    vcluster.com/certified: "true"$' "$central/stacktemplate-registration.yaml"
+grep -A1 '^  annotations:$' "$central/stacktemplate-registration.yaml" | grep -q '^    vcluster.com/certified: "true"$'
 test -f "$central/example/stackinstance-host.yaml"
 test -f "$central/example/stackinstance-registration.yaml"
 

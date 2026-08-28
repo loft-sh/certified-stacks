@@ -9,7 +9,7 @@
 # `discover` fails when a required Secret does not arrive.
 #
 # Name the StackInstance `runai`. The chart requires release `runai-cluster`.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackInstance
 metadata:
   name: runai

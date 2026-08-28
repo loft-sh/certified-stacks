@@ -1,4 +1,4 @@
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-custom-link
@@ -82,7 +82,7 @@ spec:
         labels:
           runai.loft.sh/vci: {{ $vciName }}
       rules:
-        - apiGroups: ["storage.loft.sh"]
+        - apiGroups: ["management.loft.sh"]
           resources: ["virtualclusterinstances"]
           resourceNames: ["{{ $vciName }}"]
           verbs: ["get", "patch"]
@@ -266,7 +266,7 @@ spec:
                     install_local_cleanup_tree || { echo "[link] cannot install local cleanup ownership" >&2; exit 1; }
                     install_project_cleanup_tree || { echo "[link] cannot install project cleanup ownership" >&2; exit 1; }
                     # The VCI is a Platform object in the project namespace, not in the tenant's space.
-                    instance="$(kubectl -n "$PROJECT_NAMESPACE" get virtualclusterinstances.storage.loft.sh "$VCI_NAME" -o json 2>/dev/null)" || {
+                    instance="$(kubectl -n "$PROJECT_NAMESPACE" get virtualclusterinstances.management.loft.sh "$VCI_NAME" -o json 2>/dev/null)" || {
                       echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: VirtualClusterInstance not ready" >&2; exit 1;
                     }
                     current="$(printf '%s' "$instance" | jq -r --arg annotation "$annotation" '(.metadata.annotations // {})[$annotation] // empty')"
@@ -303,7 +303,7 @@ spec:
                       link_value="$link"
                     fi
                     patch="$(jq -cn --arg annotation "$annotation" --arg value "$link_value" '{metadata: {annotations: {($annotation): $value}}}')"
-                    kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.storage.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
+                    kubectl -n "$PROJECT_NAMESPACE" patch virtualclusterinstances.management.loft.sh "$VCI_NAME" --type merge -p "$patch" >/dev/null
                     link_complete=true
                     echo "[link] $PROJECT_NAMESPACE/$VCI_NAME: set $annotation to RunAI_UI=https://$host"
                 volumeMounts:

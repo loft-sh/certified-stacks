@@ -9,7 +9,7 @@
 #
 # The Secret name includes the tenant slug.
 # Each registration uses namespace `runai-backend`. A fixed name could expose another tenant's UID and client secret.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-03-tenant-facts

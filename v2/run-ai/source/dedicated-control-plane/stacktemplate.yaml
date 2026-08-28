@@ -1,11 +1,11 @@
 # Use this template only with GPU nodes.
 # Instances from this template must use name `runai`.
 # Do not change GPU templates on a live instance. Delete old GPU AppInstance first, or set `prunePolicy: Prune`.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackTemplate
 metadata:
   name: run-ai-dedicated-control-plane
-  labels:
+  annotations:
     vcluster.com/certified: "true"
 spec:
   displayName: "NVIDIA Run:ai self-hosted (full infra, nip.io, real GPU operator)"

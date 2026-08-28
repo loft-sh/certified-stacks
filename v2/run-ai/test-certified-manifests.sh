@@ -36,12 +36,16 @@ central_host="$root/central-control-plane/stacktemplate-host.yaml"
 central_reg="$root/central-control-plane/stacktemplate-registration.yaml"
 
 require "$dedicated" '^  name: run-ai-dedicated-control-plane$'
+require "$dedicated" '^  annotations:$'
 require "$dedicated" '^    vcluster\.com/certified: "true"$'
 require "$central" '^  name: run-ai-central-control-plane$'
+require "$central" '^  annotations:$'
 require "$central" '^    vcluster\.com/certified: "true"$'
 require "$central_host" '^  name: run-ai-central-control-plane-host$'
+require "$central_host" '^  annotations:$'
 require "$central_host" '^    vcluster\.com/certified: "true"$'
 require "$central_reg" '^  name: run-ai-central-control-plane-registration$'
+require "$central_reg" '^  annotations:$'
 require "$central_reg" '^    vcluster\.com/certified: "true"$'
 require "$dedicated" 'variable: ingressProvider'
 require "$root/dedicated-control-plane/apps/02-ingress-nginx.yaml" '{{ if eq .Values.ingressProvider "aws" }}'
@@ -802,7 +806,7 @@ for template in "$dedicated_link" "$central_link"; do
     echo "FAIL $template: VCI_NAMESPACE conflates the space namespace with the project namespace" >&2
     exit 1
   fi
-  if ! rg -U -q 'get virtualclusterinstances\.storage\.loft\.sh' "$template"; then
+  if ! rg -U -q 'get virtualclusterinstances\.management\.loft\.sh' "$template"; then
     echo "FAIL $template: Job never reads its VirtualClusterInstance" >&2
     exit 1
   fi

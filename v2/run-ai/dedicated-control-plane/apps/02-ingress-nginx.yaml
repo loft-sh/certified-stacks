@@ -1,6 +1,6 @@
 # `fullnameOverride` below pins every object name, so the Service the ingress task reads its
 # `address` output from does not move when the release name does.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-02-ingress-nginx

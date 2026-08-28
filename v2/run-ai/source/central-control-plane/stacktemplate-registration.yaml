@@ -19,11 +19,11 @@
 #
 # Each output Secret name includes `tenantSlug`.
 # All registrations use `runai-backend`. Fixed names could expose another tenant's UID during deletion.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackTemplate
 metadata:
   name: run-ai-central-control-plane-registration
-  labels:
+  annotations:
     vcluster.com/certified: "true"
 spec:
   displayName: "NVIDIA Run:ai central-control-plane tenant registration"

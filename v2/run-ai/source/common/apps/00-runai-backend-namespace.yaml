@@ -3,7 +3,7 @@
 #
 # Bootstrap's Helm pre-install hook creates Secrets and RBAC in runai-backend. Helm executes hooks
 # before normal release manifests, so this separate task must create the namespace first.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-00-runai-backend-namespace

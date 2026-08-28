@@ -13,7 +13,7 @@
 #
 # It writes `runai-backend/runai-tenant-facts-<tenantSlug>`.
 # The tenant cluster template syncs that Secret for the tenant Stack.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackInstance
 metadata:
   name: runai-reg-tenant-a

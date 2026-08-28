@@ -15,7 +15,7 @@
 #
 # The shared host Stack installs the control plane and GPU Operator once.
 # This tenant installs neither.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: VirtualClusterTemplate
 metadata:
   name: runai-tenant-central-control-plane
@@ -103,10 +103,11 @@ spec:
     spaceTemplate:
       objects: |-
         {{- if not .Values.tenantSlug }}
-        apiVersion: storage.loft.sh/v1
+        apiVersion: management.loft.sh/v1
         kind: StackInstance
         metadata:
           name: runai-reg-{{ .Values.loft.virtualClusterName }}
+          namespace: {{ .Values.loft.projectNamespace }}
         spec:
           displayName: "NVIDIA Run:ai registration for {{ .Values.loft.virtualClusterName }}"
           owner:

@@ -1,6 +1,6 @@
 # This template creates a tenant vCluster and its NVIDIA Run:ai StackInstance.
 # Apply the StackTemplate and App manifests before you apply this template.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: VirtualClusterTemplate
 metadata:
   name: runai-tenant

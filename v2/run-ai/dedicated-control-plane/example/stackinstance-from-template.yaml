@@ -1,6 +1,6 @@
 # Use StackInstance name `runai`.
 # Charts require releases `runai-backend` and `runai-cluster`.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackInstance
 metadata:
   name: runai

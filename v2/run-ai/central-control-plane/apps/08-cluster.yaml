@@ -1,7 +1,7 @@
 # Keep StackInstance name `runai` and step name `cluster`.
 # Chart requires release `runai-cluster`.
 # Keep chart version here. Chart fields do not use Go templates.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-08-cluster

@@ -2,7 +2,7 @@
 # Delete TLS Secrets in pre-delete hook.
 # Self-signed mode persists the CA in `runai-internal-ca` and reuses it across upgrades.
 # Do not remove that Secret from the teardown list. A stale CA outlives the release without it.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: App
 metadata:
   name: runai-step-04-bootstrap

@@ -9,11 +9,11 @@
 # Use GPU nodes. Configure the `nvidia` RuntimeClass and tenant node labels before you apply this.
 # Install ingress-nginx first. Pass its LoadBalancer address as `hostIngressAddress`, and set
 # `ingressProvider: aws` when that address is an ELB/NLB hostname rather than an IPv4 address.
-apiVersion: storage.loft.sh/v1
+apiVersion: management.loft.sh/v1
 kind: StackTemplate
 metadata:
   name: run-ai-central-control-plane-host
-  labels:
+  annotations:
     vcluster.com/certified: "true"
 spec:
   displayName: "NVIDIA Run:ai shared host foundation (control plane + GPU Operator)"
