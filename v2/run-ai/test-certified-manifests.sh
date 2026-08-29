@@ -495,9 +495,62 @@ check_tasks() { # file label expected-newline-separated
     exit 1
   }
 }
-check_tasks "$central" "central tenant" $'discover\nregistry\nprometheus\ncluster'
+check_tasks "$central" "central tenant" $'discover\nregistry\nprometheus\ngpushim\ncluster\nverify'
 check_tasks "$central_host" "central host" $'namespace\nregistry\nbootstrap\ngpu\nbackend'
 check_tasks "$central_reg" "central registration" $'discover\nauthtoken\nclusterreg\nclustercreds\nfacts'
+
+# The NVIDIA Run:ai operator probes for its GPU and monitoring dependencies inside the cluster it is
+# installed in. Central tenancy keeps that stack on the Control Plane Cluster, so each probe has to be
+# answered here or the operator never creates the scheduler and every task still reports Healthy.
+gpu_shim="$root/central-control-plane/apps/09-gpu-stack-shim.yaml"
+require "$gpu_shim" '^  name: runai-step-09-gpu-stack-shim$'
+require "$gpu_shim" '^  defaultNamespace: gpu-operator$'
+require "$gpu_shim" '^        name: nvidia-dcgm-exporter$'
+# The operator matches the exporter on this label, not on the Service name. Without it the check
+# reports `dcgm-exporter service not found in the cluster` no matter what the Service is called.
+require "$gpu_shim" '^          app: nvidia-dcgm-exporter$'
+# Endpoints here would point one tenant's Prometheus at a Service shared by every tenant's GPU nodes.
+if rg -q '^\s+selector:' "$gpu_shim"; then
+  echo "FAIL $gpu_shim: the placeholder DCGM Service must stay endpoint-less" >&2
+  exit 1
+fi
+require "$central" 'templateRef: \{ name: runai-step-09-gpu-stack-shim \}'
+# The check runs from the cluster chart's pre-install hook, so the Service must already exist.
+if ! rg -U -q -- '- name: cluster\n      dependsOn: \[discover, registry, prometheus, gpushim\]' "$central"; then
+  echo "FAIL $central: cluster must wait for the GPU stack placeholder" >&2
+  exit 1
+fi
+require "$central" 'dcgmExporterNamespace: gpu-operator'
+cluster_app="$root/central-control-plane/apps/08-cluster.yaml"
+require "$cluster_app" 'variable: dcgmExporterNamespace'
+require "$cluster_app" 'installedFromGpuOperator: false'
+# Dedicated tenancy installs the real GPU Operator in the same cluster. Leaving the namespace unset
+# there keeps the chart default, which is the operator managing its own exporter.
+if rg -q 'dcgmExporterNamespace: [^"]' "$dedicated"; then
+  echo "FAIL $dedicated: dedicated tenancy must not declare an external DCGM exporter" >&2
+  exit 1
+fi
+
+# The Platform's release names are per-instance and hashed, and the chart truncates them at 63
+# characters, so without this the prometheus-operator Deployment is named differently in every tenant
+# and NVIDIA Run:ai reports it missing while this task is Healthy.
+require "$root/central-control-plane/apps/05-prometheus-operator.yaml" '^      fullnameOverride: kube-prometheus-stack$'
+require "$root/dedicated-control-plane/apps/05-prometheus-operator.yaml" '^      fullnameOverride: kube-prometheus-stack$'
+
+# The charts installing is not the same as NVIDIA Run:ai working, and nothing else in the Stack
+# notices the difference.
+verify_app="$root/central-control-plane/apps/10-verify-cluster.yaml"
+require "$verify_app" '^  name: runai-step-10-verify-cluster$'
+require "$verify_app" '"helm.sh/hook": post-install,post-upgrade'
+# Helm blocking on a failed hook Job is the whole mechanism: it is what turns an unusable NVIDIA
+# Run:ai cluster into a failed task instead of a Healthy one. A retry would hide the failure.
+require "$verify_app" '^        backoffLimit: 0$'
+require "$verify_app" 'serviceaccount runai-scheduler'
+require "$central" 'templateRef: \{ name: runai-step-10-verify-cluster \}'
+if ! rg -U -q -- '- name: verify\n      dependsOn: \[cluster\]' "$central"; then
+  echo "FAIL $central: verify must run after the cluster task" >&2
+  exit 1
+fi
 
 # Bootstrap creates runai-backend resources before the backend chart exists. Its namespace must
 # exist before bootstrap's Helm pre-install hook renders its admin Secret and RBAC there.
@@ -580,7 +633,7 @@ require "$central" 'assertSecretValue: "\{\{ \.Values\.requireControlPlaneCA \}\
 require "$root/central-control-plane/apps/02-discover.yaml" 'if \[ "\$actual" != "\$ASSERT_VALUE" \]; then'
 require "$central" 'fromSecret: \{ namespace: runai, name: runai-tenant-facts, key: customcaenabled \}'
 require "$central" 'clusterFqdn: "\{\{ \.Outputs\.discover\.clusterdomain \}\}"'
-require "$central" 'dependsOn: \[discover, registry, prometheus\]'
+# The cluster task's full dependency list, gpushim included, is pinned with the GPU checks below.
 # The CA wait is conditional because a publicly trusted control plane creates no CA Secret at all, and
 # an unconditional wait would hang exactly that install.
 require "$central" 'variable: requireControlPlaneCA'
@@ -680,6 +733,13 @@ if grep -q 'variable: tlsMode\|tlsMode: "{{ .Values.tlsMode }}"' "$central_vclus
   exit 1
 fi
 require "$central_vcluster" 'shared host infrastructure'
+# `engine-operator` watches nvidia.com ClusterPolicy and crash-loops without the CRD. GPU Operator
+# installs that CRD, and under this model GPU Operator runs only on the Control Plane Cluster, so the
+# tenant gets the definition and the host's policy through read-only sync instead.
+if ! rg -U -q -- 'customResources:\n              clusterpolicies\.nvidia\.com/v1:\n                enabled: true\n                scope: Cluster' "$central_vcluster"; then
+  echo "FAIL $central_vcluster: tenants need clusterpolicies.nvidia.com synced from the host" >&2
+  exit 1
+fi
 # Dedicated control-plane tenancy installs its own control plane, so whoever creates the cluster supplies the registry
 # credential. Central tenants reuse the one the Control Plane Cluster already holds, synced in, so those
 # parameters must be absent rather than merely defaulted.

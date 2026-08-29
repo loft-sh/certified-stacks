@@ -1,0 +1,46 @@
+# Central-only. GPU Operator and DCGM run in Control Plane Cluster.
+# This selector-less Service satisfies Run:ai's DCGM check. It must have no endpoints: tenants cannot
+# safely read metrics from shared exporter. GPU capacity still syncs through vCluster.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-09-gpu-stack-shim
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[NVIDIA Run:ai Step - 9] GPU stack placeholder (shared host GPU Operator)'
+  description: >-
+    Declares GPU stack on Control Plane Cluster. Creates selector-less `dcgm-exporter` Service for
+    Run:ai dependency check; installs no GPU Operator or DCGM exporter.
+  defaultNamespace: gpu-operator
+  config:
+    manifests: |-
+      # Required: Run:ai finds DCGM exporter by this label.
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: nvidia-dcgm-exporter
+        labels:
+          app: nvidia-dcgm-exporter
+          runai.loft.sh/gpu-stack: control-plane-cluster
+      spec:
+        # No selector. Nothing in this tenant exports DCGM metrics.
+        ports:
+          - name: gpu-metrics
+            port: 9400
+            protocol: TCP
+            targetPort: 9400
+      ---
+      # Records shared GPU stack for cluster inspection.
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: runai-gpu-stack-on-control-plane-cluster
+      data:
+        reason: |
+          GPU Operator and DCGM exporter run on Control Plane Cluster. GPU capacity reaches this
+          tenant through vCluster node sync.
+
+          `nvidia-dcgm-exporter` has no endpoints. It satisfies Run:ai dependency check. GPU
+          utilization metrics are unavailable; allocation and scheduling work.
+        gpuStack: control-plane-cluster

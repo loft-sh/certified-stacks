@@ -92,11 +92,20 @@ spec:
       app:
         templateRef: { name: runai-step-05-prometheus-operator }
 
+    # Installs no GPU stack. It creates the DCGM exporter Service the NVIDIA Run:ai operator looks up,
+    # because the real exporter runs on the Control Plane Cluster and the operator only probes this
+    # tenant's own API server. `cluster` depends on it: the check runs from that chart's pre-install
+    # hook, so the Service has to exist first.
+    - name: gpushim
+      timeout: 5m
+      app:
+        templateRef: { name: runai-step-09-gpu-stack-shim }
+
     # Keep task name `cluster`. The chart requires release `runai-cluster`.
     # `fqdn` is the shared control-plane URL. `clusterFqdn` is the tenant URL.
     # Registration creates both values. The control plane and agent use the same tenant URL.
     - name: cluster
-      dependsOn: [discover, registry, prometheus]
+      dependsOn: [discover, registry, prometheus, gpushim]
       timeout: 30m
       app:
         templateRef: { name: runai-step-08-cluster }
@@ -107,3 +116,17 @@ spec:
           clientSecret: "{{ .Outputs.discover.clientsecret }}"
           customCAEnabled: "{{ .Outputs.discover.customcaenabled }}"
           ingressClass: "{{ .Values.ingressClass }}"
+          # Declares that no GPU Operator manages DCGM here. `gpushim` puts the Service in this
+          # namespace. Dedicated control-plane tenancy leaves this empty and keeps the chart default.
+          dcgmExporterNamespace: gpu-operator
+
+    # The charts installing is not the same as NVIDIA Run:ai working. The operator's dependency checks
+    # run after them, and until they pass there is no scheduler. Without this task the Stack reports
+    # Healthy over a tenant that can never schedule a workload.
+    - name: verify
+      dependsOn: [cluster]
+      timeout: 20m
+      app:
+        templateRef: { name: runai-step-10-verify-cluster }
+        parameters:
+          verifyTimeoutSeconds: "900"

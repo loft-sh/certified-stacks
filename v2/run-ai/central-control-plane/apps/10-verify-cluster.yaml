@@ -1,0 +1,184 @@
+# Helm hook waits for usable Run:ai cluster. Chart install alone does not prove readiness.
+# No `hookImagePullSecret`: tenant Jobs use vCluster workload ServiceAccount.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: runai-step-10-verify-cluster
+  labels:
+    runai.loft.sh/infra: "true"
+spec:
+  displayName: '[NVIDIA Run:ai Step - 10] Verify the cluster is usable'
+  description: >-
+    Waits for Run:ai checks and scheduler. Fails Stack with missing dependency details instead of
+    reporting a broken tenant as Healthy.
+  defaultNamespace: runai
+  wait: true
+  timeout: 20m
+  config:
+    manifests: |-
+      {{- define "runai-verify.check" -}}
+      set -eu
+
+      deadline=$(( $(date +%s) + VERIFY_TIMEOUT_SECONDS ))
+
+      give_up() {
+        echo "timed out after ${VERIFY_TIMEOUT_SECONDS}s. Still not ready:$1" >&2
+        echo >&2
+        echo "RunaiConfig conditions:" >&2
+        kubectl -n runai get runaiconfig runai \
+          -o jsonpath='{range .status.conditions[*]}  {.type}={.status} {.reason}: {.message}{"\n"}{end}' >&2 || true
+        echo >&2
+        echo "Run:ai creates scheduler ServiceAccount after dependency checks pass. Check:" >&2
+        echo "  * ClusterPolicy or gpu-operator: sync clusterpolicies.nvidia.com/v1 from host." >&2
+        echo "    kubectl get crd clusterpolicies.nvidia.com" >&2
+        echo "  * dcgm-exporter: check shim Service." >&2
+        echo "    kubectl -n gpu-operator get service nvidia-dcgm-exporter" >&2
+        echo "  * prometheus-operator: check Prometheus task." >&2
+        echo "    kubectl -n monitoring get deploy" >&2
+        exit 1
+      }
+
+      deployment_available() {
+        available="$(kubectl -n runai get deployment "$1" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+        [ -n "$available" ] && [ "$available" -ge 1 ]
+      }
+
+      while :; do
+        unmet=""
+
+        for deployment in runai-operator engine-operator runai-scheduler-default; do
+          deployment_available "$deployment" || unmet="$unmet deployment/$deployment"
+        done
+        kubectl -n runai get serviceaccount runai-scheduler >/dev/null 2>&1 \
+          || unmet="$unmet serviceaccount/runai-scheduler"
+
+        if [ -z "$unmet" ]; then
+          break
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+          give_up "$unmet"
+        fi
+        echo "waiting for:$unmet"
+        sleep 10
+      done
+
+      echo "NVIDIA Run:ai cluster is usable: operator, engine, and scheduler are all available"
+      {{- end -}}
+
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: {{ .Release.Name }}-verify
+        namespace: runai
+      data:
+        verified: "deployments runai-operator, engine-operator, runai-scheduler-default; serviceaccount runai-scheduler"
+        verifyTimeoutSeconds: {{ .Values.verifyTimeoutSeconds | default "900" | quote }}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: runai-verify-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: runai-verify-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["serviceaccounts"]
+          verbs: ["get"]
+        - apiGroups: ["apps"]
+          resources: ["deployments"]
+          verbs: ["get"]
+        - apiGroups: ["run.ai"]
+          resources: ["runaiconfigs"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: runai-verify-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "-5"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      subjects:
+        - kind: ServiceAccount
+          name: runai-verify-{{ .Release.Name }}
+          namespace: runai
+      roleRef:
+        kind: Role
+        name: runai-verify-{{ .Release.Name }}
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: runai-verify-{{ .Release.Name }}
+        namespace: runai
+        annotations:
+          "helm.sh/hook": post-install,post-upgrade
+          "helm.sh/hook-weight": "0"
+          "helm.sh/hook-delete-policy": before-hook-creation
+      spec:
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            serviceAccountName: runai-verify-{{ .Release.Name }}
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: verify
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  # kubectl cache needs writable $HOME.
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                  - name: VERIFY_TIMEOUT_SECONDS
+                    value: {{ .Values.verifyTimeoutSeconds | default "900" | quote }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "runai-verify.check" . | indent 14 }}
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
+  parameters:
+    - variable: verifyTimeoutSeconds
+      label: Verify timeout (seconds)
+      # Keep below task timeout for diagnostic failure.
+      description: How long to wait for the NVIDIA Run:ai operator to bring the cluster up.
+      type: string
+      defaultValue: "900"

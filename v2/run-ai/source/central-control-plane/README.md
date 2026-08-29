@@ -64,6 +64,70 @@ tenant, because tenant domains derive from the same value. A registration that l
 `aws` fails validation naming `clusterDomain` rather than registering an unresolvable domain.
 `tests/validate-host-ingress.sh` reports which kind the cluster has.
 
+#### The address is captured once, and never reconciled
+
+`hostIngressAddress` is a parameter, not something this Stack reads back from the cluster. It is
+copied into the control-plane FQDN, into `runai/runai-control-plane-endpoint`, into the
+`runai-backend` Ingress host, and into every tenant's `clusterDomain`. Nothing re-reads it, and
+nothing checks it still matches the live Service.
+
+So when the ingress-nginx LoadBalancer address changes, everything keeps reporting Healthy and
+nothing works. On AWS the address changes whenever the controller's Service is recreated, which
+includes an ordinary `helm uninstall` / `helm install` of ingress-nginx at the same chart version:
+a new NLB gets a new hostname, and the old one leaves public DNS entirely.
+
+Symptoms, in the order you meet them:
+
+- New tenants fail in the `cluster` task's chart pre-install hook with a bare `no such host` naming a
+  hostname that appears nowhere in the current cluster.
+- The NVIDIA Run:ai UI and every tenant agent cannot reach the control plane.
+- Both StackInstances still report Healthy, with every task Ready.
+
+Confirm it in one line. These three must agree with each other and with the live Service:
+
+```bash
+kubectl -n ingress-nginx get svc ingress-nginx-controller \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+kubectl -n p-default get stackinstance runai -o jsonpath='{.spec.parameters.hostIngressAddress}{"\n"}'
+kubectl -n runai get cm runai-control-plane-endpoint -o jsonpath='{.data.fqdn}{"\n"}'
+```
+
+To recover, patch the parameter and let `bootstrap` republish the endpoint:
+
+```bash
+NEW=$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+kubectl -n p-default patch stackinstance runai --type merge \
+  -p "{\"spec\":{\"parameters\":{\"hostIngressAddress\":\"$NEW\"}}}"
+```
+
+Two things to expect while that runs.
+
+First, `bootstrap` republishes `runai-control-plane-endpoint` before the `backend` task patches the
+`runai-backend` Ingress, so for a short window the control plane advertises a hostname its own
+Ingress does not yet answer for.
+
+Second, if you patch immediately after reinstalling ingress-nginx, the `backend` task fails on
+ingress-nginx's own admission webhook:
+
+```text
+UPGRADE FAILED: cannot patch "runai-backend-ingress" with kind Ingress: Internal error occurred:
+failed calling webhook "validate.nginx.ingress.kubernetes.io": no endpoints available for service
+"ingress-nginx-controller-admission"
+```
+
+The StackInstance goes Degraded and retries, up to four attempts a minute apart, which is normally
+enough for the new controller pod to become Ready. If it burns all four, wait for
+`kubectl -n ingress-nginx get endpoints ingress-nginx-controller-admission` to report an address and
+re-apply. The dedicated stack gates on this with `runai-step-03-ingress-admission-ready`; the central
+host Stack has no equivalent, because it treats ingress-nginx as a prerequisite it never installs.
+
+Then re-run every tenant: each tenant's `clusterDomain` was derived from the old address at
+registration time and does not update on its own.
+
+A real `domain` you control avoids all of this. The LoadBalancer address then only has to be correct
+in your DNS records, and it is the one thing in this list that a Stack cannot silently get wrong.
+
 ### Pulling the job image
 
 Bootstrap Jobs use the vCluster Platform image. Platform provides its reference as `__image__`.
@@ -134,8 +198,9 @@ kubectl apply -f stacktemplate-host.yaml \
 kubectl apply -f example/stackinstance-host.yaml
 
 # 3. Wait for it, and note the control-plane FQDN.
+#    Tasks are under `.status.tasks`, each with `.name`, `.phase`, `.health`, and `.message`.
 kubectl get stackinstance runai -n p-default \
-  -o jsonpath='{range .status.steps[*]}{.name}{"\t"}{.phase}{"\t"}{.message}{"\n"}{end}'
+  -o jsonpath='{.status.phase}{"\n"}{range .status.tasks[*]}  {.name}{"\t"}{.phase}{"\t"}{.health}{"\t"}{.message}{"\n"}{end}'
 ```
 
 ### 4. Create a tenant cluster
@@ -169,6 +234,17 @@ The cluster template also syncs the control-plane CA. See [Trusting the control 
 The tenant cluster does not install the control plane or GPU Operator.
 `sync.fromHost.nodes` copies labeled host nodes, GPU capacity, and NFD/GFD labels to the tenant API server.
 `sync.fromHost.runtimeClasses` copies the `nvidia` RuntimeClass for NVIDIA Run:ai GPU workloads.
+`sync.fromHost.customResources` copies the `clusterpolicies.nvidia.com/v1` definition and the host's
+policy, read-only. That CRD ships with GPU Operator, which runs only on the Control Plane Cluster, and
+NVIDIA Run:ai's `engine-operator` watches it: without the CRD it crash-loops on `no matches for kind
+"ClusterPolicy"` and the cluster never comes up. It is required, not optional. A tenant created before
+this mapping existed picks it up only once its cluster is updated from the template.
+
+The NVIDIA Run:ai operator also looks up a DCGM exporter Service in the cluster it is installed in, and
+refuses to finish installing without one. The exporter runs on the Control Plane Cluster, so the tenant
+Stack's `gpushim` task answers that lookup with an endpoint-less Service in `gpu-operator`, and its
+`cluster` task sets `global.nvidiaDcgmExporter.installedFromGpuOperator: false` so the operator does not
+then look for the GPU Operator that would own it. See [Known gaps](#known-gaps) for what this costs.
 
 ### Registering a tenant ahead of its cluster
 
@@ -325,11 +401,15 @@ Use `dedicated-control-plane/` where compute isolation is required.
 
 ## Known gaps
 
-- **GPU metrics.** `dcgm-exporter` now runs on the Control Plane Cluster in namespace `gpu-operator`,
+- **GPU metrics.** `dcgm-exporter` runs on the Control Plane Cluster in namespace `gpu-operator`,
   outside every tenant's API server, so a tenant's Prometheus cannot scrape it and NVIDIA Run:ai GPU
-  utilisation views may be empty. Allocation still works because synced node objects provide
-  capacity. Exposing the exporter to tenants would leak every tenant's GPU metrics unless each scrape
-  config filters to its own nodes. This is a policy, not a boundary.
+  utilisation views are empty. Allocation still works because synced node objects provide capacity.
+  The `nvidia-dcgm-exporter` Service in a tenant's own `gpu-operator` namespace is a placeholder with
+  no selector and no endpoints: it exists so the NVIDIA Run:ai operator's dependency check passes, and
+  it exports nothing. Do not give it endpoints. The host Service load-balances across every tenant's
+  GPU nodes, so pointing a tenant at it returns other tenants' metrics, sampled at random. Real
+  per-tenant metrics need a scrape path scoped to that tenant's nodes, which this Stack does not have
+  yet. This is a policy, not a boundary.
 - **Tenant workload TLS.** Tenant Ingresses are served with ingress-nginx's default certificate. Issue
   per-tenant certificates with cert-manager on the Control Plane Cluster if you need them.
 - **Tenant volumes** use the Control Plane Cluster's default StorageClass. Only the shared control
@@ -343,6 +423,8 @@ Use `dedicated-control-plane/` where compute isolation is required.
 | `apps/02-discover.yaml` | App `runai-step-02-discover`. Central-only. Waits for objects another Stack wrote or the vCluster syncer placed, so a task can declare outputs over them. |
 | `apps/03-tenant-facts.yaml` | App `runai-step-03-tenant-facts`. Central-only. Writes the one per-tenant Secret the tenant Stack reads. |
 | `apps/04-bootstrap.yaml` | App `runai-step-04-bootstrap-host`. Named apart from dedicated control-plane tenancy's `runai-step-04-bootstrap` because it runs on the Control Plane Cluster and takes `hookImagePullSecret`. |
+| `apps/09-gpu-stack-shim.yaml` | App `runai-step-09-gpu-stack-shim`. Central-only. Installs no GPU stack. Creates the DCGM exporter Service the NVIDIA Run:ai operator looks up, with nothing behind it. |
+| `apps/10-verify-cluster.yaml` | App `runai-step-10-verify-cluster`. Central-only. Fails the tenant Stack when the NVIDIA Run:ai operator has not brought the scheduler up, instead of reporting Healthy over a dead cluster. |
 | `stacktemplate-host.yaml` | Shared control plane and GPU Operator. Apply once per Control Plane Cluster. |
 | `stacktemplate-registration.yaml` | Registers one tenant. The cluster template creates one instance of it per tenant. Apply it by hand only to pre-register. |
 | `stacktemplate.yaml` | Tenant runtime. Deployed inside each tenant cluster. |
@@ -377,17 +459,27 @@ https://runai.jfrog.io/artifactory/cp-charts-prod
 
 ## Release names
 
-The Helm release name is derived from `<StackInstance name>-<task name>`, and both charts require
-fixed release names.
+The Platform derives a task's Helm release name as `<StackInstance name>-<task name>-<hash>`, and
+truncates it at 63 characters. The hash makes the release name **per-instance and unpredictable**:
 
-| Stack | Instance name | Task | Release |
-| --- | --- | --- | --- |
-| Host foundation | `runai` | `backend` | `runai-backend` |
-| Tenant runtime | `runai` | `cluster` | `runai-cluster` |
+```text
+runai-backend/sh.helm.release.v1.runai-backend-468bef.v1     instance `runai`, task `backend`
+gpu-operator/sh.helm.release.v1.runai-gpu-763ab5.v1          instance `runai`, task `gpu`
+runai-backend/sh.helm.release.v1.found-backend-a6ab58.v1     instance `found`, task `backend`
+```
 
-Naming the host instance anything else, `runai-host` for example, silently yields
-`runai-host-backend` and breaks the control-plane chart. Registration instances have no such
-constraint. Name them `runai-reg-<tenantSlug>`.
+Nothing here may depend on that name. Where a chart needs a fixed operand name, pin it in the App
+instead: `apps/07-control-plane.yaml` sets `fullnameOverride` on the postgresql and nats sub-charts,
+and `apps/05-prometheus-operator.yaml` sets `fullnameOverride: kube-prometheus-stack` so the operator
+Deployment is `kube-prometheus-stack-operator` in every tenant.
+
+That second one is not hypothetical. Without it the release name reaches the chart's fullname
+template, truncation cuts `prometheus` in half, and the tenant gets a Deployment named something like
+`ant-runai-1d304a-prometheu-operator`. The NVIDIA Run:ai operator looks up `prometheus-operator`
+by name, does not find it, and reports the dependency missing while the `prometheus` task is Healthy.
+
+Name registration instances `runai-reg-<tenantSlug>`. The host instance name is otherwise free: this
+bundle has installed correctly under both `runai` and other names.
 
 ## Remove
 
@@ -412,3 +504,21 @@ first.
 
 Removal does not delete namespaces or Prometheus release PVCs. Check remaining resources before you
 delete the Apps.
+
+### What removal leaves behind
+
+Deleting the host StackInstance uninstalls every Helm release it owns, and stops there. Observed
+leftovers on a cluster that had run four tenants:
+
+| Left behind | Why | Matters because |
+| --- | --- | --- |
+| Namespaces `runai`, `runai-backend`, `gpu-operator` | Helm does not delete namespaces it did not create as release resources | Harmless. A reinstall reuses them. |
+| Completed `restful-op-create-*` Jobs and their pods in `runai-backend`, one set per tenant ever registered, plus the `runai-backend-*-migrator` Jobs | They carry `helm.sh/hook-delete-policy: before-hook-creation`, which deletes them on the *next* run of the same hook, never on uninstall | They accumulate for the life of the cluster. Delete the namespace to clear them. |
+| CRDs `clusterpolicies.nvidia.com` and `nvidiadrivers.nvidia.com` | Helm never removes CRDs | A reinstall is not actually starting cold. Delete them explicitly if you are testing a first install. |
+
+Deleting a tenant cluster removes its tenant StackInstance with it, because that Stack runs inside
+the tenant. It does not remove the tenant's registration instance in `p-default`, by design: that
+instance's pre-delete hook is what deregisters the tenant, so it has to outlive the cluster. Nothing
+garbage-collects it, so a tenant deleted through the UI and left there stays registered in the shared
+control plane, and its `runai-backend/runai-tenant-facts-<slug>` Secret, holding a client secret,
+stays with it. Step 2 above is not optional.

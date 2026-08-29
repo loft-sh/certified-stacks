@@ -181,6 +181,17 @@ spec:
               enabled: true
             ingressClasses:
               enabled: true
+            # The NVIDIA Run:ai engine watches `nvidia.com/v1` ClusterPolicy. GPU Operator installs that
+            # CRD, and under this tenancy model it runs only on the Control Plane Cluster, so the CRD
+            # is absent from the tenant API server and `engine-operator` crash-loops on
+            # `no matches for kind "ClusterPolicy"`.
+            #
+            # This mirrors the CRD and the host's ClusterPolicy into the tenant, read-only. It installs
+            # no GPU Operator here: the tenant reads the host's policy and cannot change it.
+            customResources:
+              clusterpolicies.nvidia.com/v1:
+                enabled: true
+                scope: Cluster
             # These three Secrets provide tenant configuration.
             # Do not copy the UID, client secret, or CA into parameters. Secret sync updates rotated values.
             secrets:

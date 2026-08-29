@@ -17,6 +17,19 @@ spec:
       repoURL: https://prometheus-community.github.io/helm-charts
       version: 87.17.0
     values: |-
+      # Pin the operand names instead of deriving them from the release name.
+      #
+      # The Platform names a Stack task's release `<instance>-<task>-<hash>`, and the chart's own
+      # fullname template then truncates that at 63 characters, so the operator Deployment comes out
+      # as something like `ant-runai-1d304a-prometheu-operator` -- a different name in every tenant,
+      # with the word `prometheus` cut in half. The NVIDIA Run:ai operator will not find a
+      # prometheus-operator under a name like that, and reports it missing while this task is Healthy.
+      #
+      # This is the name NVIDIA Run:ai's own documentation tells you to verify:
+      #   kubectl get deployment kube-prometheus-stack-operator -n monitoring
+      #
+      # One release of this chart per namespace, which both tenancy models hold to.
+      fullnameOverride: kube-prometheus-stack
       grafana:
         enabled: false
       alertmanager:

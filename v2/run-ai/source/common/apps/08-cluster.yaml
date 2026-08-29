@@ -32,6 +32,16 @@ spec:
         global:
           ingress:
             ingressClass: "{{ .Values.ingressClass }}"
+          {{- if .Values.dcgmExporterNamespace }}
+          # Set only where no GPU Operator manages DCGM in this cluster. Central control-plane
+          # tenancy sets it: the exporter runs on the Control Plane Cluster and the tenant holds
+          # only the placeholder Service from `runai-step-09-gpu-stack-shim`. Without
+          # `installedFromGpuOperator: false` the NVIDIA Run:ai operator also looks for the GPU
+          # Operator that would own the exporter, and fails its dependency check on that instead.
+          nvidiaDcgmExporter:
+            installedFromGpuOperator: false
+            namespace: "{{ .Values.dcgmExporterNamespace }}"
+          {{- end }}
   parameters:
     - variable: fqdn
       label: Control-plane FQDN
@@ -70,3 +80,14 @@ spec:
       required: true
       defaultValue: nginx
       validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+    - variable: dcgmExporterNamespace
+      label: DCGM exporter namespace
+      # Empty leaves the chart defaults: the exporter is a GPU Operator operand in this cluster,
+      # which is dedicated control-plane tenancy. A value declares the opposite, and the NVIDIA
+      # Run:ai operator then looks for the Service in that namespace and expects no GPU Operator
+      # behind it. Central control-plane tenancy passes `gpu-operator`, where step 9 puts the
+      # placeholder Service.
+      description: Namespace holding the DCGM exporter Service when no GPU Operator manages it here.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
