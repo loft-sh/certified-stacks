@@ -158,7 +158,7 @@ if [[ "$mode" == check ]]; then
     diff -ruN "$root/$variant" "$stage/$variant" || status=1
   done
   [[ "$status" -eq 0 ]] || {
-    echo "Generated manifests are stale. Run: ./v2/run-ai/render.sh" >&2
+    echo "Generated manifests are stale. Run: ./run-ai/render.sh" >&2
     exit "$status"
   }
   [[ "${RENDER_SKIP_TESTS:-}" == 1 ]] || bash "$root/test-certified-manifests.sh"
