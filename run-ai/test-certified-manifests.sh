@@ -1155,6 +1155,17 @@ for variant in dedicated-control-plane central-control-plane; do
         exit 1
       }
     done
+    # Each Job runs the Platform's own image, so it follows the registry and pull credentials the
+    # Platform already has, and satisfies `runAsNonRoot` above without pinning a foreign UID.
+    found=$(grep -cE '^ +image: \{\{ \.Values\.__image__ \| quote \}\}$' "$app" || true)
+    [[ "$found" -ge "$jobs" ]] || {
+      echo "FAIL $app: $jobs Job(s) but only $found '.Values.__image__' image(s)" >&2
+      exit 1
+    }
+    if grep -qE '^ +image: [^{]' "$app"; then
+      echo "FAIL $app: Job names an image literally instead of .Values.__image__" >&2
+      exit 1
+    fi
   done
 done
 

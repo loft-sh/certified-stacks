@@ -29,7 +29,11 @@ spec:
                 type: RuntimeDefault
             containers:
               - name: wait
-                image: curlimages/curl:8.12.1
+                # The running Platform's own image, as every other hook Job uses. A literal image
+                # would pull from whatever registry this manifest was written against, which no
+                # private-registry or air-gapped install can do, and it would have to pin a foreign
+                # numeric UID to satisfy `runAsNonRoot` above.
+                image: {{ .Values.__image__ | quote }}
                 securityContext:
                   allowPrivilegeEscalation: false
                   readOnlyRootFilesystem: true
@@ -45,6 +49,12 @@ spec:
                 command: ["sh", "-ec"]
                 args:
                   - |
+                    # This container is non-root with a read-only root filesystem, so it cannot
+                    # install anything. Require the tool in the image, as the other hook Jobs do.
+                    # Failing here names the cause; a missing tool would otherwise surface as the
+                    # App's opaque `wait` timeout.
+                    command -v curl >/dev/null || { echo "missing curl; the Platform image must provide it" >&2; exit 1; }
+
                     url="https://{{ .Values.ingressAdmissionServiceName }}.ingress-nginx.svc:443/networking/v1/ingresses"
                     for i in $(seq 1 150); do
                       code="$(curl -sk --connect-timeout 2 -o /dev/null -w '%{http_code}' "$url" || true)"
