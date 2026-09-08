@@ -37,7 +37,9 @@ spec:
     # Empty derives `<tenant>.<lb-ip>.nip.io` after the LoadBalancer IP is assigned.
     - { variable: domain, type: string, validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', label: "Control plane domain" }
     - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$', label: "Control plane admin username" }
-    - { variable: adminPassword, type: password, required: true, label: "Control plane admin password" }
+    # Run:ai password requirements:
+    # https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/install-using-helm/install-control-plane
+    - { variable: adminPassword, type: password, required: true, validation: '^(?=.{8,}$)(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).*$', label: "Control plane admin password", description: "At least 8 characters. Include uppercase and lowercase letters, a number, and a special character." }
     - { variable: dockerServer, type: string, required: true, label: "Image registry server" }
     - { variable: dockerUsername, type: string, required: true, label: "Image registry username" }
     - { variable: runaiRegistryCredentials, type: password, required: true, label: "Image registry credentials" }

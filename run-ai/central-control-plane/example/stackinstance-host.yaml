@@ -23,6 +23,8 @@ spec:
     hostIngressAddress: "<HOST_NGINX_LOADBALANCER_IPV4>"
     storageClass: "<STORAGE_CLASS>"
     adminUsername: "<ADMIN_EMAIL>"
+    # Run:ai password requirements:
+    # https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/install-using-helm/install-control-plane
     adminPassword: "<ADMIN_PASSWORD>"
     dockerServer: https://runai.jfrog.io
     dockerUsername: self-hosted-image-puller-prod
