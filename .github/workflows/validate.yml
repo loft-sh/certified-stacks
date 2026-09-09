@@ -1,0 +1,94 @@
+name: Validate Manifests
+
+on:
+  workflow_dispatch:
+    inputs:
+      vcluster_version:
+        description: vCluster CLI version (latest or SemVer)
+        required: false
+        default: latest
+        type: string
+      platform_version:
+        description: vCluster Platform version (latest or SemVer)
+        required: false
+        default: latest
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'run-ai/**'
+      - '.github/workflows/validate.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'run-ai/**'
+      - '.github/workflows/validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Render and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VCLUSTER_VERSION: ${{ github.event.inputs.vcluster_version || 'latest' }}
+      PLATFORM_VERSION: ${{ github.event.inputs.platform_version || 'latest' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up vind
+        uses: loft-sh/setup-vind@1ffff82986c3afff90ba8f357f69541b24e3a8f0 # v1
+        with:
+          version: ${{ env.VCLUSTER_VERSION }}
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - name: Set up manifest validation prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep python3-yaml
+      - name: Render Run:ai manifests
+        run: ./run-ai/render.sh --check
+      - name: Validate requested versions
+        run: |
+          for version in "$VCLUSTER_VERSION" "$PLATFORM_VERSION"; do
+            if [[ ! "$version" =~ ^latest$|^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+              echo "Invalid version: $version. Use latest or SemVer." >&2
+              exit 1
+            fi
+          done
+      - name: Start vCluster Platform
+        run: |
+          cat > "$RUNNER_TEMP/platform-values.yaml" <<'EOF'
+          env:
+            DISABLE_LOFT_ROUTER: true
+          EOF
+          vcluster platform start \
+            --version "$PLATFORM_VERSION" \
+            --password test123 \
+            --host vcluster-platform.local \
+            --no-login \
+            --no-port-forwarding \
+            --no-tunnel \
+            --config "$RUNNER_TEMP/platform-vcluster-config.json" \
+            --values "$RUNNER_TEMP/platform-values.yaml"
+          kubectl wait --for=condition=Available apiservice/v1.management.loft.sh --timeout=5m
+      - name: Validate rendered Run:ai manifests
+        run: |
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane; do
+            kubectl delete --ignore-not-found --recursive --filename "$directory"
+          done
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane; do
+            while IFS= read -r -d '' manifest; do
+              echo "::group::Validate $manifest"
+              kubectl apply \
+                --server-side \
+                --dry-run=server \
+                --validate=strict \
+                --request-timeout=30s \
+                --filename "$manifest"
+              echo "::endgroup::"
+            done < <(find "$directory" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | sort -z)
+          done

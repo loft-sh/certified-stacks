@@ -11,7 +11,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # exist. `rg` and `python3` are not installed by default on either.
 missing=()
 [[ "${BASH_VERSINFO[0]}" -ge 4 ]] || missing+=("bash >= 4 (running ${BASH_VERSION}; macOS /bin/bash is 3.2 -- try 'brew install bash')")
-for tool in python3 rg; do
+for tool in python3 rg helm; do
   command -v "$tool" >/dev/null || missing+=("$tool")
 done
 command -v python3 >/dev/null && { python3 -c 'import yaml' 2>/dev/null || missing+=("PyYAML (python3 -m pip install pyyaml); needed to verify the manifests parse as YAML"); }
@@ -1057,6 +1057,52 @@ for path in sorted(root.rglob("*.yaml")):
         print("     a Go template inside a double-quoted scalar must escape its own quotes as \\\"", file=sys.stderr)
 sys.exit(1 if failed else 0)
 YAMLPARSE
+
+python3 - "$root" <<'HELMRENDER' || exit 1
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+root = Path(sys.argv[1])
+for path in sorted(root.glob("*-control-plane/apps/*.yaml")):
+    app = yaml.safe_load(path.read_text())
+    spec = app.get("spec", {})
+    manifests = spec.get("config", {}).get("manifests")
+    if not isinstance(manifests, str):
+        continue
+
+    values = {
+        "__image__": "registry.example.invalid/platform:latest",
+        "loft": {
+            "virtualClusterName": "test-vcluster",
+            "space": "test-space",
+            "projectNamespace": "test-project",
+        },
+    }
+    for parameter in spec.get("parameters", []):
+        values[parameter["variable"]] = parameter.get(
+            "defaultValue", True if parameter.get("type") == "boolean" else "test"
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        chart = Path(directory)
+        (chart / "templates").mkdir()
+        (chart / "Chart.yaml").write_text("apiVersion: v2\nname: render-check\nversion: 0.1.0\n")
+        (chart / "values.yaml").write_text(yaml.safe_dump(values))
+        (chart / "templates/manifests.yaml").write_text(manifests)
+        result = subprocess.run(
+            ["helm", "template", "render-check", str(chart), "--namespace", "runai", "--values", str(chart / "values.yaml")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    if result.returncode:
+        print(f"FAIL {path}: App manifests do not render:\n{result.stderr}", file=sys.stderr)
+        raise SystemExit(1)
+HELMRENDER
 
 # The NVIDIA Run:ai version is spelled out in seven places and `chart.version` cannot be templated: the
 # Platform renders Go templates in `values` and `manifests`, not in the chart coordinates. So

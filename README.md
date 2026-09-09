@@ -94,7 +94,7 @@ For Run:ai changes, render and verify the generated manifests from the repositor
 ./run-ai/render.sh --check
 ```
 
-The checks require Bash 4 or later, Python 3 with PyYAML, and `rg`. Review all generated changes before opening a pull request.
+The checks require Bash 4 or later, Python 3 with PyYAML, `rg`, and Helm. Review all generated changes before opening a pull request.
 
 When you open a pull request, describe the integration and supported deployment models, identify the vCluster Platform version used for testing, and include the results of installation, update, failure-recovery, and removal tests. Call out resources that survive removal or require manual cleanup.
 
