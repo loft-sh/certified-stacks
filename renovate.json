@@ -23,12 +23,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "OpenTofu version in CI workflows",
+      "description": "Pinned tool versions in CI workflows",
       "fileMatch": ["^\\.github/workflows/.+\\.yml$"],
-      "matchStrings": ["tofu_version:\\s*\"(?<currentValue>[^\"]+)\""],
-      "depNameTemplate": "opentofu/opentofu",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>.+)$"
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[^\\n]*?'(?<currentValue>[^']+)'"
+      ]
     }
   ]
 }
