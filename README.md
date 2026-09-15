@@ -39,7 +39,7 @@ A native Stack has three main parts:
 - A cluster-scoped **StackTemplate** defines the task graph, parameters, dependencies, health gates, and outputs.
 - A project-scoped **StackInstance** applies the template to a tenant cluster or control plane cluster.
 
-Start with the [runnable starter Stack](https://www.vcluster.com/docs/platform/next/administer/templates/create-stack-templates/#deploy-a-starter-stack) to deploy a two-task example before adapting the patterns in this repository. The broader [Create a Stack template](https://www.vcluster.com/docs/platform/next/administer/templates/create-stack-templates) guide documents the shipped task schema, validation rules, and output handling. Use the [StackTemplate](https://www.vcluster.com/docs/platform/next/api/resources/stacktemplate) and [StackInstance](https://www.vcluster.com/docs/platform/next/api/resources/stackinstance) API references for individual fields.
+Start with the [starter Stack](examples/starter-stack.yaml) to deploy a two-task example. Before you apply it, set the project namespace, owner, and tenant cluster name. The broader [Create a Stack template](https://www.vcluster.com/docs/platform/next/administer/templates/create-stack-templates) guide documents the shipped task schema, validation rules, and output handling. Use the [StackTemplate](https://www.vcluster.com/docs/platform/next/api/resources/stacktemplate) and [StackInstance](https://www.vcluster.com/docs/platform/next/api/resources/stackinstance) API references for individual fields.
 
 ### Test locally
 

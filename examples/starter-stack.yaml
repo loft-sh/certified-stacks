@@ -1,0 +1,84 @@
+# Define a Stack template with two inline App tasks.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: starter-stack
+spec:
+  displayName: Starter Stack
+  description: Deploys two ConfigMaps to show task order and output handoff.
+  parameters:
+    - variable: greeting
+      label: Greeting
+      description: Message passed from first task to second task.
+      type: string
+      defaultValue: Hello from a Stack
+  tasks:
+    - name: backend
+      app:
+        template:
+          spec:
+            displayName: Starter backend
+            description: Creates greeting for frontend task.
+            defaultNamespace: stack-starter
+            wait: true
+            config:
+              manifests: |-
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: starter-backend
+                data:
+                  greeting: {{ .Values.greeting | quote }}
+      outputs:
+        - name: greeting
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: stack-starter
+            name: starter-backend
+            jsonPath: "{.data.greeting}"
+    - name: frontend
+      # Wait for backend task to become healthy.
+      dependsOn:
+        - backend
+      app:
+        template:
+          spec:
+            displayName: Starter frontend
+            description: Records greeting from backend task.
+            defaultNamespace: stack-starter
+            wait: true
+            config:
+              manifests: |-
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: starter-frontend
+                data:
+                  backendGreeting: {{ .Outputs.backend.greeting | quote }}
+  publishedOutputs:
+    - name: greeting
+      fromTask:
+        task: backend
+        output: greeting
+---
+# Apply template to an existing tenant cluster.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: starter-stack
+  namespace: p-my-project
+spec:
+  displayName: Starter Stack
+  # App tasks deploy as this user or team.
+  owner:
+    user: admin
+  destination:
+    virtualCluster:
+      name: development
+  templateRef:
+    name: starter-stack
+  parameters:
+    greeting: Hello from my first Stack
+  # Delete child AppInstances when tasks are removed.
+  prunePolicy: Prune
