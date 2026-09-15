@@ -52,7 +52,9 @@ spec:
     # Control-plane administrator credentials. These live here and nowhere else: no tenant Stack and
     # no tenant cluster ever receives them.
     - { variable: adminUsername, type: string, required: true, validation: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$', defaultValue: "admin@run.ai", label: "Control plane admin username" }
-    - { variable: adminPassword, type: password, required: true, label: "Control plane admin password" }
+    # Run:ai password requirements:
+    # https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/install-using-helm/install-control-plane
+    - { variable: adminPassword, type: password, required: true, validation: '^(?=.{8,}$)(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).*$', label: "Control plane admin password", description: "At least 8 characters. Include uppercase and lowercase letters, a number, and a special character." }
     - { variable: dockerServer, type: string, required: true, defaultValue: "https://runai.jfrog.io", label: "Image registry server" }
     - { variable: dockerUsername, type: string, required: true, defaultValue: "self-hosted-image-puller-prod", label: "Image registry username", description: "The username must match the subject of the image registry credentials JWT." }
     - { variable: runaiRegistryCredentials, type: password, required: true, label: "Image registry credentials JWT",

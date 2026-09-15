@@ -51,11 +51,14 @@ spec:
       type: string
       required: true
       defaultValue: admin@run.ai
+    # Run:ai password requirements:
+    # https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/install-using-helm/install-control-plane
     - variable: adminPassword
       label: "Control plane admin password"
-      description: Initial NVIDIA Run:ai UI administrator password.
+      description: At least 8 characters. Include uppercase and lowercase letters, a number, and a special character.
       type: password
       required: true
+      validation: '^(?=.{8,}$)(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).*$'
     - variable: ingressProvider
       label: "Ingress provider"
       description: "Host ingress provider: standard or AWS."
