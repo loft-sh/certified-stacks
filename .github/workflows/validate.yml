@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       vcluster_version:
-        description: vCluster CLI version (latest or SemVer)
+        description: vCluster CLI version (empty for pinned default, or latest/SemVer)
         required: false
-        default: latest
+        default: ""
         type: string
       platform_version:
-        description: vCluster Platform version (latest or SemVer)
+        description: vCluster Platform version (empty for pinned default, or latest/SemVer)
         required: false
-        default: latest
+        default: ""
         type: string
   push:
     branches: [main]
@@ -27,18 +27,32 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate:
     name: Render and validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      VCLUSTER_VERSION: ${{ github.event.inputs.vcluster_version || 'latest' }}
-      PLATFORM_VERSION: ${{ github.event.inputs.platform_version || 'latest' }}
+      # renovate: datasource=github-releases depName=loft-sh/vcluster
+      VCLUSTER_VERSION: ${{ github.event.inputs.vcluster_version || 'v0.37.1' }}
+      # renovate: datasource=github-releases depName=loft-sh/loft extractVersion=^v(?<version>.+)$
+      PLATFORM_VERSION: ${{ github.event.inputs.platform_version || '4.12.0' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+      - name: Validate requested versions
+        run: |
+          for version in "$VCLUSTER_VERSION" "$PLATFORM_VERSION"; do
+            if [[ ! "$version" =~ ^latest$|^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+              echo "Invalid version: $version. Use latest or SemVer." >&2
+              exit 1
+            fi
+          done
       - name: Set up vind
         uses: loft-sh/setup-vind@1ffff82986c3afff90ba8f357f69541b24e3a8f0 # v1
         with:
@@ -51,14 +65,6 @@ jobs:
           sudo apt-get install --yes ripgrep python3-yaml
       - name: Render Run:ai manifests
         run: ./run-ai/render.sh --check
-      - name: Validate requested versions
-        run: |
-          for version in "$VCLUSTER_VERSION" "$PLATFORM_VERSION"; do
-            if [[ ! "$version" =~ ^latest$|^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
-              echo "Invalid version: $version. Use latest or SemVer." >&2
-              exit 1
-            fi
-          done
       - name: Start vCluster Platform
         run: |
           cat > "$RUNNER_TEMP/platform-values.yaml" <<'EOF'
@@ -83,12 +89,14 @@ jobs:
           for directory in run-ai/dedicated-control-plane run-ai/central-control-plane; do
             while IFS= read -r -d '' manifest; do
               echo "::group::Validate $manifest"
+              status=0
               kubectl apply \
                 --server-side \
                 --dry-run=server \
                 --validate=strict \
                 --request-timeout=30s \
-                --filename "$manifest"
+                --filename "$manifest" || status=$?
               echo "::endgroup::"
+              [ "$status" -eq 0 ] || exit "$status"
             done < <(find "$directory" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | sort -z)
           done

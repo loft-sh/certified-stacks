@@ -1067,11 +1067,43 @@ from pathlib import Path
 import yaml
 
 root = Path(sys.argv[1])
+TEMPLATED_FIELDS = ("manifests", "values")
+
+
+def parameter_value(parameter, path):
+    variable = parameter.get("variable")
+    if not isinstance(variable, str) or not variable:
+        print(f"FAIL {path}: App parameter is missing variable", file=sys.stderr)
+        raise SystemExit(1)
+
+    kind = parameter.get("type")
+    default = parameter.get("defaultValue")
+    if default is None:
+        return variable, True if kind == "boolean" else 1 if kind == "number" else "test"
+    if kind == "boolean" and isinstance(default, str):
+        if default.lower() not in ("true", "false"):
+            print(f"FAIL {path}: boolean parameter {variable} has invalid defaultValue {default!r}", file=sys.stderr)
+            raise SystemExit(1)
+        return variable, default.lower() == "true"
+    if kind == "number" and isinstance(default, str):
+        try:
+            return variable, int(default)
+        except ValueError:
+            print(f"FAIL {path}: number parameter {variable} has invalid defaultValue {default!r}", file=sys.stderr)
+            raise SystemExit(1)
+    return variable, default
+
+
 for path in sorted(root.glob("*-control-plane/apps/*.yaml")):
     app = yaml.safe_load(path.read_text())
     spec = app.get("spec", {})
-    manifests = spec.get("config", {}).get("manifests")
-    if not isinstance(manifests, str):
+    config = spec.get("config", {})
+    templates = {
+        field: config[field]
+        for field in TEMPLATED_FIELDS
+        if isinstance(config.get(field), str)
+    }
+    if not templates:
         continue
 
     values = {
@@ -1083,25 +1115,25 @@ for path in sorted(root.glob("*-control-plane/apps/*.yaml")):
         },
     }
     for parameter in spec.get("parameters", []):
-        values[parameter["variable"]] = parameter.get(
-            "defaultValue", True if parameter.get("type") == "boolean" else "test"
-        )
+        variable, value = parameter_value(parameter, path)
+        values[variable] = value
 
-    with tempfile.TemporaryDirectory() as directory:
-        chart = Path(directory)
-        (chart / "templates").mkdir()
-        (chart / "Chart.yaml").write_text("apiVersion: v2\nname: render-check\nversion: 0.1.0\n")
-        (chart / "values.yaml").write_text(yaml.safe_dump(values))
-        (chart / "templates/manifests.yaml").write_text(manifests)
-        result = subprocess.run(
-            ["helm", "template", "render-check", str(chart), "--namespace", "runai", "--values", str(chart / "values.yaml")],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    if result.returncode:
-        print(f"FAIL {path}: App manifests do not render:\n{result.stderr}", file=sys.stderr)
-        raise SystemExit(1)
+    for field, template in templates.items():
+        with tempfile.TemporaryDirectory() as directory:
+            chart = Path(directory)
+            (chart / "templates").mkdir()
+            (chart / "Chart.yaml").write_text("apiVersion: v2\nname: render-check\nversion: 0.1.0\n")
+            (chart / "values.yaml").write_text(yaml.safe_dump(values))
+            (chart / f"templates/{field}.yaml").write_text(template)
+            result = subprocess.run(
+                ["helm", "template", "render-check", str(chart), "--namespace", "runai", "--values", str(chart / "values.yaml")],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        if result.returncode:
+            print(f"FAIL {path}: App spec.config.{field} does not render:\n{result.stderr}", file=sys.stderr)
+            raise SystemExit(1)
 HELMRENDER
 
 # The NVIDIA Run:ai version is spelled out in seven places and `chart.version` cannot be templated: the
