@@ -53,7 +53,7 @@ kubectl apply -n p-default -f nvidia-dynamo/example/stackinstance-tenant-cluster
 
 You can also create the Stack from the Platform UI with the **NVIDIA Dynamo** template.
 
-The `runtime` task waits for the release to become ready and times out after 20 minutes, which leaves room for slow image pulls.
+Helm waits up to 20 minutes for the release to become ready, which leaves room for slow image pulls. The `runtime` task fails after 25 minutes, so a failed install reports Helm's error first.
 
 ## Verify
 

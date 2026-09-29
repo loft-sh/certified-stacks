@@ -70,6 +70,26 @@ else:
         return re.sub(r"{{\s*\.Values\.(\w+)\s*}}", lambda match: str(values[match.group(1)]), text)
 
     spec = tasks[0]["app"]["template"]["spec"]
+
+    # The task timeout is only the Stack's deadline; Helm's --wait uses the app's own timeout and
+    # falls back to 5m. Keep Helm's below the task's so a failed install reports Helm's error.
+    def minutes(duration):
+        match = re.fullmatch(r"(\d+)m", str(duration))
+        if not match:
+            errors.append(f"stacktemplate.yaml: timeout {duration!r} must be whole minutes, like 20m")
+            return None
+        return int(match.group(1))
+
+    if spec.get("wait"):
+        if "timeout" not in spec:
+            errors.append("stacktemplate.yaml: runtime waits for Helm but sets no app timeout, so Helm uses its 5m default")
+        elif "timeout" not in tasks[0]:
+            errors.append("stacktemplate.yaml: runtime sets no task timeout, so the Stack uses its 10m default")
+        else:
+            helm, task = minutes(spec["timeout"]), minutes(tasks[0]["timeout"])
+            if helm is not None and task is not None and helm >= task:
+                errors.append(f"stacktemplate.yaml: Helm timeout {spec['timeout']} must be below task timeout {tasks[0]['timeout']}")
+
     chart = spec["config"]["chart"]
     (work / "chart").write_text(
         "\n".join([chart["name"], chart["repoURL"], render(chart["version"]), render(spec["defaultNamespace"])]) + "\n"

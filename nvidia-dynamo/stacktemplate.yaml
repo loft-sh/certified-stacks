@@ -33,6 +33,9 @@ spec:
             description: Installs the dynamo-platform Helm chart with its bundled NATS and etcd.
             defaultNamespace: "{{ .Values.namespace }}"
             wait: true
+            # Helm's own --wait deadline. Without it Helm gives up after its 5m default, and
+            # pulling the operator, NATS and etcd images can take longer.
+            timeout: 20m
             config:
               chart:
                 name: dynamo-platform
@@ -46,5 +49,6 @@ spec:
                     install: true
                   etcd:
                     install: true
-      # Pulling the operator, NATS and etcd images can exceed the default task timeout.
-      timeout: 20m
+      # Stack deadline for the task. Keep it above the Helm timeout so a failed install reports
+      # Helm's error instead of a generic task timeout.
+      timeout: 25m
