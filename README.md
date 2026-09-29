@@ -13,11 +13,12 @@ vCluster Platform bundles the certified resources from this repository. Each Pla
 
 ## Available integrations
 
-The initial native catalog contains NVIDIA Run:ai:
+The native catalog contains these integrations:
 
 | Integration | Deployment models | Components |
 | --- | --- | --- |
 | [NVIDIA Run:ai](run-ai/) | Dedicated control plane and central control plane | vCluster, NVIDIA GPU components, and NVIDIA Run:ai |
+| [NVIDIA Dynamo](nvidia-dynamo/) | One runtime per tenant cluster or control plane cluster | NVIDIA Dynamo operator, NATS, and etcd |
 
 See the [NVIDIA Run:ai integration guide](https://www.vcluster.com/docs/platform/next/integrations/certified-stacks/runai) to choose a deployment model and understand its prerequisites.
 

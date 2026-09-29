@@ -1,0 +1,50 @@
+# Installs the NVIDIA Dynamo runtime cluster-wide in the destination. Install it once per tenant
+# cluster or control plane cluster: the operator and its CRDs are cluster-scoped.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: nvidia-dynamo
+  annotations:
+    vcluster.com/certified: "true"
+spec:
+  displayName: NVIDIA Dynamo
+  description: Installs the NVIDIA Dynamo inference runtime (operator, NATS, etcd) so AI models can be served with DynamoGraphDeployments.
+  parameters:
+    - variable: version
+      label: Chart Version
+      description: Version of the dynamo-platform Helm chart.
+      type: string
+      required: true
+      defaultValue: "1.5.0"
+      validation: '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+    - variable: namespace
+      label: Namespace
+      description: Namespace the runtime is installed into.
+      type: string
+      required: true
+      defaultValue: dynamo-system
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+  tasks:
+    - name: runtime
+      app:
+        template:
+          spec:
+            displayName: NVIDIA Dynamo Runtime
+            description: Installs the dynamo-platform Helm chart with its bundled NATS and etcd.
+            defaultNamespace: "{{ .Values.namespace }}"
+            wait: true
+            config:
+              chart:
+                name: dynamo-platform
+                version: "{{ .Values.version }}"
+                repoURL: https://helm.ngc.nvidia.com/nvidia/ai-dynamo
+              # The runtime owns the whole Dynamo stack in its destination, so it installs the
+              # bundled NATS and etcd subcharts instead of pointing at external instances.
+              values: |
+                global:
+                  nats:
+                    install: true
+                  etcd:
+                    install: true
+      # Pulling the operator, NATS and etcd images can exceed the default task timeout.
+      timeout: 20m

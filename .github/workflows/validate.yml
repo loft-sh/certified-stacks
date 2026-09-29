@@ -17,11 +17,13 @@ on:
     branches: [main]
     paths:
       - 'run-ai/**'
+      - 'nvidia-dynamo/**'
       - '.github/workflows/validate.yml'
   pull_request:
     branches: [main]
     paths:
       - 'run-ai/**'
+      - 'nvidia-dynamo/**'
       - '.github/workflows/validate.yml'
 
 permissions:
@@ -65,6 +67,8 @@ jobs:
           sudo apt-get install --yes ripgrep python3-yaml
       - name: Render Run:ai manifests
         run: ./run-ai/render.sh --check
+      - name: Check NVIDIA Dynamo manifests
+        run: ./nvidia-dynamo/test-certified-manifests.sh
       - name: Start vCluster Platform
         run: |
           cat > "$RUNNER_TEMP/platform-values.yaml" <<'EOF'
@@ -81,12 +85,12 @@ jobs:
             --config "$RUNNER_TEMP/platform-vcluster-config.json" \
             --values "$RUNNER_TEMP/platform-values.yaml"
           kubectl wait --for=condition=Available apiservice/v1.management.loft.sh --timeout=5m
-      - name: Validate rendered Run:ai manifests
+      - name: Validate manifests
         run: |
-          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane; do
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo; do
             kubectl delete --ignore-not-found --recursive --filename "$directory"
           done
-          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane; do
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo; do
             while IFS= read -r -d '' manifest; do
               echo "::group::Validate $manifest"
               status=0

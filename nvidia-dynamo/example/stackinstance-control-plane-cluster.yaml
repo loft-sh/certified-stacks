@@ -1,0 +1,19 @@
+# Installs NVIDIA Dynamo directly into a control plane cluster connected to vCluster Platform.
+# Apply it in a project namespace, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: nvidia-dynamo
+spec:
+  displayName: NVIDIA Dynamo
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: nvidia-dynamo
+  parameters:
+    version: "1.5.0"
+    namespace: dynamo-system
+  prunePolicy: Prune

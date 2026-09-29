@@ -1,0 +1,19 @@
+# Installs NVIDIA Dynamo into an existing tenant cluster.
+# Apply it in the project namespace that owns the tenant cluster, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: nvidia-dynamo
+spec:
+  displayName: NVIDIA Dynamo
+  owner:
+    user: admin
+  destination:
+    virtualCluster:
+      name: my-tenant-cluster
+  templateRef:
+    name: nvidia-dynamo
+  parameters:
+    version: "1.5.0"
+    namespace: dynamo-system
+  prunePolicy: Prune
