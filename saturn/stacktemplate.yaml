@@ -1,0 +1,82 @@
+apiVersion: storage.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: saturn-enterprise
+spec:
+  displayName: Saturn Cloud Enterprise
+  description: Installs Saturn Cloud Enterprise Helm operator, then labels and optionally taints configured system nodes.
+  inputs:
+    - variable: nodeNames
+      type: multiline
+      description: Label nodes for system components. Leave empty to disable node scheduling.
+    - variable: nodeRole
+      type: string
+      description: Node label value for system components. Docs use `system`.
+    - variable: taintSystemNodes
+      type: boolean
+      defaultValue: "false"
+      description: Optionally taint system nodes so only system pods land there.
+    - variable: createNamespaces
+      type: boolean
+      defaultValue: "true"
+    - variable: clusterName
+      type: string
+      description: 'Required: your cluster. Docs example: `my-cluster`.'
+    - variable: cloudProvider
+      type: string
+      description: 'Required: your cluster. Docs example: `k0rdent`.'
+    - variable: region
+      type: string
+      description: 'Required: your cluster. Docs example: `us-east-1`.'
+    - variable: availabilityZone
+      type: string
+      description: 'Can match region if cluster has no distinct AZs. Docs example: `us-east-1`.'
+    - variable: bootstrapToken
+      type: password
+      description: From activation.
+    - variable: domain
+      type: string
+      description: 'Derived from organization name during registration. Installation hosted at `<orgname>.saturnenterprise.io`.'
+    - variable: adminEmail
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `admin@example.com`.'
+    - variable: customerName
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `my-org`.'
+    - variable: baseUrl
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `https://app.my-org.saturnenterprise.io`.'
+    - variable: sshDomain
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `ssh.my-org.saturnenterprise.io`.'
+  tasks:
+    - name: helm
+      taskTimeout: 30m
+      app:
+        templateRef:
+          name: saturn-step-01-helm-operator
+        parameters:
+          createNamespaces: "{{ .Values.createNamespaces }}"
+          clusterName: "{{ .Values.clusterName }}"
+          cloudProvider: "{{ .Values.cloudProvider }}"
+          region: "{{ .Values.region }}"
+          availabilityZone: "{{ .Values.availabilityZone }}"
+          bootstrapToken: "{{ .Values.bootstrapToken }}"
+          domain: "{{ .Values.domain }}"
+          adminEmail: "{{ .Values.adminEmail }}"
+          customerName: "{{ .Values.customerName }}"
+          baseUrl: "{{ .Values.baseUrl }}"
+          sshDomain: "{{ .Values.sshDomain }}"
+          nodeNames: "{{ .Values.nodeNames }}"
+          nodeRole: "{{ .Values.nodeRole }}"
+          taintSystemNodes: "{{ .Values.taintSystemNodes }}"
+    - name: bash
+      dependsOn: [helm]
+      taskTimeout: 10m
+      app:
+        templateRef:
+          name: saturn-step-02-node-scheduling
+        parameters:
+          nodeNames: "{{ .Values.nodeNames }}"
+          nodeRole: "{{ .Values.nodeRole }}"
+          taintSystemNodes: "{{ .Values.taintSystemNodes }}"

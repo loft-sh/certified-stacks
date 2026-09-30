@@ -1,0 +1,78 @@
+# Apply App and StackTemplate manifests before this template.
+apiVersion: storage.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: saturn-enterprise-tenant
+spec:
+  displayName: Saturn Cloud Enterprise tenant
+  description: Creates tenant vCluster, then deploys Saturn Cloud Enterprise through deploy.stacks.
+  owner:
+    user: admin
+  parameters:
+    - variable: nodeNames
+      description: Comma-separated node names for system components. Leave empty to disable node scheduling.
+      type: string
+    - variable: nodeRole
+      description: Node label value for system components. Docs use `system`.
+      type: string
+    - variable: taintSystemNodes
+      description: Optionally taint system nodes so only system pods land there.
+      defaultValue: "false"
+      type: boolean
+    - variable: createNamespaces
+      description: Create Saturn namespaces.
+      defaultValue: "true"
+      type: boolean
+    - variable: clusterName
+      description: 'Required: your cluster. Docs example: `my-cluster`.'
+      type: string
+    - variable: cloudProvider
+      description: 'Required: your cluster. Docs example: `k0rdent`.'
+      type: string
+    - variable: region
+      description: 'Required: your cluster. Docs example: `us-east-1`.'
+      type: string
+    - variable: availabilityZone
+      description: 'Can match region if cluster has no distinct AZs. Docs example: `us-east-1`.'
+      type: string
+    - variable: bootstrapToken
+      description: From activation.
+      type: password
+    - variable: adminEmail
+      description: 'Derived from organization name during registration. Docs example: `admin@example.com`.'
+      type: string
+    - variable: customerName
+      description: 'Derived from organization name during registration. Docs example: `my-org`.'
+      type: string
+  template:
+    instanceTemplate:
+      metadata:
+        labels:
+          loft.sh/stacks-sync: "true"
+    helmRelease:
+      values: |-
+        controlPlane:
+          advanced:
+            workloadServiceAccount:
+              imagePullSecrets:
+                - name: engnode
+        deploy:
+          stacks:
+            - name: saturn
+              templateRef:
+                name: saturn-enterprise
+              inputs:
+                nodeNames: {{ .Values.nodeNames }}
+                nodeRole: {{ .Values.nodeRole }}
+                taintSystemNodes: {{ .Values.taintSystemNodes }}
+                createNamespaces: {{ .Values.createNamespaces }}
+                clusterName: {{ .Values.clusterName }}
+                cloudProvider: {{ .Values.cloudProvider }}
+                region: {{ .Values.region }}
+                availabilityZone: {{ .Values.availabilityZone }}
+                bootstrapToken: {{ .Values.bootstrapToken }}
+                domain: {{ printf "%s.saturnenterprise.io" .Values.customerName | quote }}
+                adminEmail: {{ .Values.adminEmail }}
+                customerName: {{ .Values.customerName }}
+                baseUrl: {{ printf "https://app.%s.saturnenterprise.io" .Values.customerName | quote }}
+                sshDomain: {{ printf "ssh.%s.saturnenterprise.io" .Values.customerName | quote }}

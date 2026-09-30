@@ -1,0 +1,105 @@
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: saturn-step-01-helm-operator
+spec:
+  displayName: '[Saturn Step - 1] Helm Operator'
+  description: Installs Saturn Cloud Enterprise with saturn-helm-operator.
+  defaultNamespace: saturn-system
+  wait: true
+  timeout: 30m
+  config:
+    chart:
+      name: saturn-helm-operator
+      repoURL: oci://ghcr.io/saturncloud/charts
+      version: 2026.06.01-1
+    values: |-
+      createNamespaces: {{ .Values.createNamespaces }}
+
+      # Required: your cluster
+      clusterName: {{ .Values.clusterName | quote }}
+      cloudProvider: {{ .Values.cloudProvider | quote }}
+      region: {{ .Values.region | quote }}
+      availabilityZone: {{ .Values.availabilityZone | quote }}
+
+      # From activation
+      bootstrapToken: {{ .Values.bootstrapToken | quote }}
+
+      # These are derived from your organization name during registration.
+      # Your installation will be hosted at <orgname>.saturnenterprise.io
+      domain: {{ .Values.domain | quote }}
+      adminEmail: {{ .Values.adminEmail | quote }}
+      customerName: {{ .Values.customerName | quote }}
+      baseUrl: {{ .Values.baseUrl | quote }}
+      sshDomain: {{ .Values.sshDomain | quote }}
+
+      # Disable node selectors if you don't use node labels
+      nodeScheduling:
+        nodeSelector: {{ if and .Values.nodeNames .Values.nodeRole }}
+          node.saturncloud.io/role: {{ .Values.nodeRole | quote }}
+        {{ else }}null{{ end }}
+        tolerations: {{ if and .Values.nodeNames .Values.nodeRole .Values.taintSystemNodes }}
+        - key: "node.saturncloud.io/role"
+          operator: "Equal"
+          value: {{ .Values.nodeRole | quote }}
+          effect: "NoSchedule"
+        {{ else }}null{{ end }}
+
+  parameters:
+    - variable: createNamespaces
+      label: Create namespaces
+      type: boolean
+      defaultValue: "true"
+    - variable: clusterName
+      label: Cluster name
+      type: string
+      description: 'Required: your cluster. Docs example: `my-cluster`.'
+    - variable: cloudProvider
+      label: Cloud provider
+      type: string
+      description: 'Required: your cluster. Docs example: `k0rdent`.'
+    - variable: region
+      label: Region
+      type: string
+      description: 'Required: your cluster. Docs example: `us-east-1`.'
+    - variable: availabilityZone
+      label: Availability zone
+      type: string
+      description: 'Can match region if cluster has no distinct AZs. Docs example: `us-east-1`.'
+    - variable: bootstrapToken
+      label: Bootstrap token
+      type: password
+      description: From activation.
+    - variable: domain
+      label: Domain
+      type: string
+      description: 'Derived from organization name during registration. Installation hosted at `<orgname>.saturnenterprise.io`.'
+    - variable: adminEmail
+      label: Admin email
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `admin@example.com`.'
+    - variable: customerName
+      label: Customer name
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `my-org`.'
+    - variable: baseUrl
+      label: Base URL
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `https://app.my-org.saturnenterprise.io`.'
+    - variable: sshDomain
+      label: SSH domain
+      type: string
+      description: 'Derived from organization name during registration. Docs example: `ssh.my-org.saturnenterprise.io`.'
+    - variable: nodeNames
+      label: System node names
+      type: multiline
+      description: Label nodes for system components. Leave empty to disable node scheduling.
+    - variable: nodeRole
+      label: System node role
+      type: string
+      description: Node label value applied by node-scheduling step. Docs use `system`.
+    - variable: taintSystemNodes
+      label: Taint system nodes
+      type: boolean
+      defaultValue: "false"
+      description: When true, adds documented NoSchedule toleration for system-node taint.

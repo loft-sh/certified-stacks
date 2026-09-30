@@ -1,0 +1,103 @@
+apiVersion: storage.loft.sh/v1
+kind: App
+metadata:
+  name: saturn-step-02-node-scheduling
+spec:
+  displayName: '[Saturn Step - 2] Node Scheduling'
+  description: Labels system nodes and optionally taints them after Saturn Helm install.
+  wait: true
+  timeout: 10m
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: saturn-node-scheduling
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: {{ .Release.Name }}-saturn-node-scheduling
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "patch", "update"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: {{ .Release.Name }}-saturn-node-scheduling
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: {{ .Release.Name }}-saturn-node-scheduling
+      subjects:
+        - kind: ServiceAccount
+          name: saturn-node-scheduling
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: saturn-node-scheduling
+        namespace: {{ .Release.Namespace }}
+      spec:
+        backoffLimit: 1
+        template:
+          spec:
+            serviceAccountName: saturn-node-scheduling
+            restartPolicy: Never
+            containers:
+              - name: label-and-taint
+                image: {{ .Values.__image__ | quote }}
+                command: ["sh", "-ec"]
+                args:
+                  - |
+                    if [ -z "$NODE_NAMES$NODE_ROLE" ]; then
+                      exit 0
+                    fi
+                    [ -n "$NODE_NAMES" ] && [ -n "$NODE_ROLE" ] || {
+                      echo "nodeNames and nodeRole must be set together" >&2
+                      exit 1
+                    }
+                    for node in $(printf '%s' "$NODE_NAMES" | tr ',' '\n'); do
+                      attempt=0
+                      until kubectl get node "$node" >/dev/null 2>&1; do
+                        attempt=$((attempt + 1))
+                        # ponytail: five-minute cap; make configurable only if real clusters need longer.
+                        if [ "$attempt" -ge 150 ]; then
+                          echo "timed out waiting for node $node" >&2
+                          exit 1
+                        fi
+                        echo "waiting for node $node"
+                        sleep 2
+                      done
+                    done
+                    for node in $(printf '%s' "$NODE_NAMES" | tr ',' '\n'); do
+                      kubectl label node "$node" "node.saturncloud.io/role=$NODE_ROLE" --overwrite
+                      if [ "$TAINT_SYSTEM_NODES" = "true" ]; then
+                        kubectl taint node "$node" "node.saturncloud.io/role=$NODE_ROLE:NoSchedule" --overwrite
+                      fi
+                    done
+                env:
+                  - name: NODE_NAMES
+                    value: {{ .Values.nodeNames | quote }}
+                  - name: NODE_ROLE
+                    value: {{ .Values.nodeRole | quote }}
+                  - name: TAINT_SYSTEM_NODES
+                    value: {{ .Values.taintSystemNodes | quote }}
+  parameters:
+    - variable: nodeNames
+      label: System node names
+      type: multiline
+      description: Label nodes for system components.
+    - variable: nodeRole
+      label: System node role
+      type: string
+      description: Node label value for system components. Docs use `system`.
+    - variable: taintSystemNodes
+      label: Taint system nodes
+      type: boolean
+      defaultValue: "false"
+      description: Optionally taint system nodes so only system pods land there.
