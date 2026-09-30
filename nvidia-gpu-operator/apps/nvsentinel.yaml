@@ -1,0 +1,123 @@
+# Chart fields do not use Go templates. Keep the NVSentinel version here and in `global.image.tag`.
+#
+# Dry-run monitoring only. Quarantine, draining, remediation, Janitor, and MongoDB are disabled.
+# The labeler runs on the CPU node selector. Health monitors, the metadata collector, and
+# platformConnector run on GPU workers. platformConnector shares a node-local socket with them.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: nvidia-gpu-operator-stack-nvsentinel
+spec:
+  displayName: '[NVIDIA GPU Operator Stack] NVSentinel'
+  description: Installs NVSentinel GPU health monitoring in dry-run mode, reading DCGM from the GPU Operator.
+  defaultNamespace: nvsentinel
+  wait: true
+  timeout: 15m
+  config:
+    chart:
+      # Platform pulls oci://<repoURL>/<name>. The chart is published at ghcr.io/nvidia/nvsentinel,
+      # so repoURL stops at the organization. oci://ghcr.io/nvidia/nvsentinel/nvsentinel returns 403.
+      name: nvsentinel
+      repoURL: oci://ghcr.io/nvidia
+      version: v1.13.0
+    values: |-
+      {{- $cpu := dict -}}
+      {{- with .Values.cpuNodeSelector }}{{ $kv := splitn "=" 2 . }}{{ $_ := set $cpu $kv._0 $kv._1 }}{{ end -}}
+      {{- /* GPU Operator labels every GPU node with nvidia.com/gpu.present=true. */ -}}
+      {{- $gpuSelector := .Values.gpuNodeSelector | default "nvidia.com/gpu.present=true" -}}
+      {{- $gpuKV := splitn "=" 2 $gpuSelector -}}
+      global:
+        dryRun: true
+        image:
+          tag: v1.13.0
+        dcgm:
+          enabled: true
+          service:
+            endpoint: {{ .Values.dcgmHost | default "nvidia-dcgm.gpu-operator.svc" | quote }}
+            port: {{ .Values.dcgmPort | default "5555" }}
+        gpuHealthMonitor:
+          enabled: true
+        syslogHealthMonitor:
+          enabled: true
+        nicHealthMonitor:
+          enabled: false
+        cspHealthMonitor:
+          enabled: false
+        healthEventsAnalyzer:
+          enabled: false
+        mongodbStore:
+          enabled: false
+        faultQuarantine:
+          enabled: false
+        nodeDrainer:
+          enabled: false
+        faultRemediation:
+          enabled: false
+        janitor:
+          enabled: false
+        janitorProvider:
+          enabled: false
+        tracing:
+          enabled: false
+          endpoint: ''
+        auditLogging:
+          enabled: false
+        nodeSelector:
+          kubernetes.io/os: linux
+          {{ $gpuKV._0 }}: {{ $gpuKV._1 | quote }}
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        systemNodeSelector:
+          kubernetes.io/os: linux
+          {{- range $k, $v := $cpu }}
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+        systemNodeTolerations: []
+      networkPolicy:
+        enabled: true
+      podMonitor:
+        enabled: false
+      labeler:
+        # Stack parameters arrive as the strings "true" and "false".
+        assumeDriverInstalled: {{ if eq (toString .Values.driverPreinstalled) "true" }}true{{ else }}false{{ end }}
+      platformConnector:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: {{ $gpuKV._0 }}
+                      operator: In
+                      values:
+                        - {{ $gpuKV._1 | quote }}
+      nodeConditionCleanup:
+        nodeSelector:
+          kubernetes.io/os: linux
+          {{- range $k, $v := $cpu }}
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+        tolerations: []
+  parameters:
+    - variable: cpuNodeSelector
+      label: CPU node selector
+      description: Optional key=value label selector for the NVSentinel labeler and cleanup Job.
+      type: string
+    - variable: gpuNodeSelector
+      label: GPU node selector
+      description: Optional key=value label selector for GPU workers. Empty uses nvidia.com/gpu.present=true.
+      type: string
+    - variable: driverPreinstalled
+      label: NVIDIA driver preinstalled
+      type: boolean
+      defaultValue: "false"
+    - variable: dcgmHost
+      label: DCGM service host
+      description: Supplied by the gpuready gate contract inside the Stack.
+      type: string
+      defaultValue: nvidia-dcgm.gpu-operator.svc
+    - variable: dcgmPort
+      label: DCGM service port
+      type: string
+      defaultValue: "5555"

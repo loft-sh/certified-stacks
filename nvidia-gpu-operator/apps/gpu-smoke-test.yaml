@@ -1,0 +1,66 @@
+# Runs NVIDIA's CUDA VectorAdd sample on a GPU worker. `wait: true` holds the task until the Job
+# completes, so the task is Healthy only after a CUDA kernel ran and exited 0.
+#
+# Stack-driven AppInstances do not apply App parameter defaults. Every value is guarded with `default`.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: nvidia-gpu-operator-stack-smoke-test
+spec:
+  displayName: '[NVIDIA GPU Operator Stack] GPU smoke test'
+  description: Runs the CUDA VectorAdd sample on a GPU worker and completes when it prints Test PASSED.
+  defaultNamespace: gpu-stack
+  wait: true
+  timeout: 10m
+  config:
+    manifests: |-
+      {{- $image := .Values.image | default "nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0-ubuntu22.04" -}}
+      {{- $gpuCount := .Values.gpuCount | default "1" | toString -}}
+      {{- $hash := printf "%s|%s|%s" $image $gpuCount (.Values.gpuNodeSelector | default "") | sha256sum | trunc 8 -}}
+      # A Job spec is immutable. Changing a setting names a new Job instead of failing the upgrade.
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{ .Release.Name | trunc 45 | trimSuffix "-" }}-{{ $hash }}
+        labels:
+          app.kubernetes.io/name: nvidia-gpu-operator-stack-smoke-test
+          app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      spec:
+        backoffLimit: 2
+        activeDeadlineSeconds: 540
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: nvidia-gpu-operator-stack-smoke-test
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+          spec:
+            restartPolicy: Never
+            {{- with .Values.gpuNodeSelector }}
+            {{- $kv := splitn "=" 2 . }}
+            nodeSelector:
+              {{ $kv._0 }}: {{ $kv._1 | quote }}
+            {{- end }}
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: cuda-vectoradd
+                image: {{ $image | quote }}
+                resources:
+                  limits:
+                    nvidia.com/gpu: {{ $gpuCount }}
+  parameters:
+    - variable: gpuNodeSelector
+      label: GPU node selector
+      description: Optional key=value label selector for GPU workers. The GPU request alone already restricts placement.
+      type: string
+    - variable: gpuCount
+      label: GPUs requested
+      description: Whole GPUs the sample requests for the few seconds it runs.
+      type: number
+      defaultValue: "1"
+    - variable: image
+      label: Sample image
+      type: string
+      defaultValue: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0-ubuntu22.04

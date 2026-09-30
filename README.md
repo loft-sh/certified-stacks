@@ -19,6 +19,7 @@ The native catalog contains these integrations:
 | --- | --- | --- |
 | [NVIDIA Run:ai](run-ai/) | Dedicated control plane and central control plane | vCluster, NVIDIA GPU components, and NVIDIA Run:ai |
 | [NVIDIA Dynamo](nvidia-dynamo/) | One runtime per tenant cluster or control plane cluster | NVIDIA Dynamo operator, NATS, and etcd |
+| [NVIDIA GPU Operator](nvidia-gpu-operator/) | Per tenant cluster | cert-manager, NVIDIA GPU Operator, NVSentinel, GPU readiness gates, and a CUDA smoke test |
 
 See the [NVIDIA Run:ai integration guide](https://www.vcluster.com/docs/platform/next/integrations/certified-stacks/runai) to choose a deployment model and understand its prerequisites.
 
@@ -96,6 +97,12 @@ For Run:ai changes, render and verify the generated manifests from the repositor
 ```
 
 The checks require Bash 4 or later, Python 3 with PyYAML, `rg`, and Helm. Review all generated changes before opening a pull request.
+
+The NVIDIA GPU Operator integration has no generated files. Run its checks from the repository root:
+
+```bash
+./nvidia-gpu-operator/test-certified-manifests.sh
+```
 
 When you open a pull request, describe the integration and supported deployment models, identify the vCluster Platform version used for testing, and include the results of installation, update, failure-recovery, and removal tests. Call out resources that survive removal or require manual cleanup.
 

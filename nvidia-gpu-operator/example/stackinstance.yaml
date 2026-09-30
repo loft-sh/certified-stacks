@@ -1,0 +1,27 @@
+# Apply the Stack to an existing tenant cluster with at least one NVIDIA GPU worker.
+# Set the project namespace, owner, and tenant cluster name before you apply it.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: nvidia-gpu-operator
+  namespace: p-default
+spec:
+  displayName: NVIDIA GPU Operator
+  # App tasks deploy as this user or team.
+  owner:
+    user: admin
+  destination:
+    virtualCluster:
+      name: gpu-tenant
+  templateRef:
+    name: nvidia-gpu-operator-stack
+  parameters:
+    # Leave both selectors empty to place by taints and GPU discovery labels alone.
+    cpuNodeSelector: workload.example.com/pool=cpu-services
+    gpuNodeSelector: workload.example.com/pool=gpu-compute
+    driverPreinstalled: "false"
+    certManagerPreinstalled: "false"
+    waitForClusterPolicy: "false"
+    minGPUs: "1"
+  # Delete child AppInstances when tasks are removed from the template.
+  prunePolicy: Prune

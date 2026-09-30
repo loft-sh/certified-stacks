@@ -1,0 +1,43 @@
+# Chart fields do not use Go templates. Keep the cert-manager version here.
+#
+# Platform merges task parameters into chart values. The cert-manager chart schema rejects unknown
+# top-level keys, but AppInstance deploys run Helm with --skip-schema-validation, so the extra
+# gate parameters the cert-manager task passes are ignored rather than fatal.
+# When the tenant cluster already runs cert-manager, the `cert-manager` task references
+# `nvidia-gpu-operator-stack-gate` instead and verifies that installation. See stacktemplate.yaml.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: nvidia-gpu-operator-stack-cert-manager
+spec:
+  displayName: '[NVIDIA GPU Operator Stack] cert-manager'
+  description: Installs cert-manager, with every component on the CPU node selector when one is set.
+  defaultNamespace: cert-manager
+  wait: true
+  timeout: 10m
+  config:
+    chart:
+      name: cert-manager
+      repoURL: https://charts.jetstack.io
+      version: v1.20.3
+    values: |-
+      {{- with .Values.cpuNodeSelector }}
+      {{- $kv := splitn "=" 2 . }}
+      global:
+        nodeSelector:
+          kubernetes.io/os: linux
+          {{ $kv._0 }}: {{ $kv._1 | quote }}
+      {{- end }}
+      crds:
+        enabled: true
+        # Keep Certificates and Issuers when the Stack is removed.
+        keep: true
+      prometheus:
+        enabled: true
+        servicemonitor:
+          enabled: false
+  parameters:
+    - variable: cpuNodeSelector
+      label: CPU node selector
+      description: Optional key=value label selector for cert-manager's controller, webhook, cainjector, and startup check.
+      type: string

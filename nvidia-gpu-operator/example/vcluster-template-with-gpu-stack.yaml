@@ -1,0 +1,103 @@
+# Creates a tenant cluster with private-node CPU and GPU pools, then deploys the
+# nvidia-gpu-operator-stack StackTemplate through deploy.stacks.
+#
+# Apply the Apps, the StackTemplate, and node-profiles.yaml first. Replace each <placeholder>
+# with a node provider and node type from your installation.
+apiVersion: management.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: nvidia-gpu-operator-tenant
+spec:
+  displayName: NVIDIA GPU tenant cluster
+  description: Private-node CPU and GPU pools with the NVIDIA GPU Operator Stack.
+  owner:
+    user: admin
+  parameters:
+    - variable: kubernetesVersion
+      label: Kubernetes version
+      type: string
+      options:
+        - v1.34.11
+        - v1.35.8
+        - v1.36.4
+      defaultValue: v1.36.4
+    - variable: gpuQuantity
+      label: GPU workers
+      type: number
+      defaultValue: "1"
+      min: 1
+    - variable: driverPreinstalled
+      label: NVIDIA driver preinstalled
+      description: Enable when the GPU node OS image already contains the NVIDIA driver.
+      type: boolean
+      defaultValue: "false"
+    - variable: certManagerPreinstalled
+      label: cert-manager already installed
+      type: boolean
+      defaultValue: "false"
+    - variable: waitForClusterPolicy
+      label: Gate on ClusterPolicy as well as GPU capacity
+      type: boolean
+      defaultValue: "false"
+    - variable: minGPUs
+      label: Minimum allocatable GPUs
+      type: number
+      defaultValue: "1"
+      min: 1
+  template:
+    helmRelease:
+      chart:
+        version: "0.37.2"
+      values: |-
+        privateNodes:
+          enabled: true
+          # Workers reach the control plane through the Platform VPN.
+          vpn:
+            enabled: true
+          autoNodes:
+            - provider: <node-provider>
+              static:
+                - name: gpu
+                  profile: gpu-compute
+                  quantity: {{ .Values.gpuQuantity }}
+                  nodeTypeSelector:
+                    - property: vcluster.com/profile
+                      operator: In
+                      values:
+                        - <gpu-node-type>
+                # Size the CPU pool for cert-manager, the GPU Operator controller, NFD master and
+                # garbage collector, both gate Jobs, and system pods. A 2 CPU / 4 GiB worker
+                # starved the operator until it lost its leader election lease. Use 4 CPU / 8 GiB.
+                - name: cpu
+                  profile: cpu-services
+                  quantity: 1
+                  nodeTypeSelector:
+                    - property: vcluster.com/profile
+                      operator: In
+                      values:
+                        - <cpu-node-type>
+        controlPlane:
+          backingStore:
+            etcd:
+              embedded:
+                enabled: true
+          distro:
+            k8s:
+              version: "{{ .Values.kubernetesVersion }}"
+        deploy:
+          cni:
+            flannel:
+              enabled: true
+          stacks:
+            - name: gpu
+              displayName: NVIDIA GPU Operator
+              templateRef:
+                name: nvidia-gpu-operator-stack
+              parameters:
+                # These labels come from node-profiles.yaml.
+                cpuNodeSelector: workload.example.com/pool=cpu-services
+                gpuNodeSelector: workload.example.com/pool=gpu-compute
+                driverPreinstalled: {{ .Values.driverPreinstalled | toString | quote }}
+                certManagerPreinstalled: {{ .Values.certManagerPreinstalled | toString | quote }}
+                waitForClusterPolicy: {{ .Values.waitForClusterPolicy | toString | quote }}
+                minGPUs: {{ .Values.minGPUs | toString | quote }}

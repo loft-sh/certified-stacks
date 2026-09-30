@@ -1,0 +1,29 @@
+# Optional. Two NodeProfiles that split private-node workers into a CPU services pool and a
+# tainted GPU pool. The example tenant cluster template and StackInstance select these labels.
+#
+# CPU workers stay untainted. The GPU taint is permanent scheduling policy. There are no
+# startupTaints: Node Ready does not prove NVIDIA initialization completed. The gpuready gate
+# covers GPU readiness at the Stack level.
+apiVersion: management.loft.sh/v1
+kind: NodeProfile
+metadata:
+  name: cpu-services
+spec:
+  displayName: CPU Services
+  description: CPU service workers for controllers and Stack gate Jobs.
+  nodeLabels:
+    workload.example.com/pool: cpu-services
+---
+apiVersion: management.loft.sh/v1
+kind: NodeProfile
+metadata:
+  name: gpu-compute
+spec:
+  displayName: GPU Compute
+  description: GPU workers reserved for workloads that tolerate nvidia.com/gpu.
+  nodeLabels:
+    workload.example.com/pool: gpu-compute
+  taints:
+    - key: nvidia.com/gpu
+      value: "true"
+      effect: NoSchedule

@@ -1,0 +1,359 @@
+# Reusable readiness gate. A Job waits for a resource to report ready and for the scheduler to
+# advertise capacity, then marks a contract ConfigMap ready.
+#
+# `wait: true` makes Platform run Helm with `--wait --wait-for-jobs`, so the task stays
+# Progressing until the Job completes and fails when the Job fails. An operator chart reports
+# installed long before its operands are usable; this Job is the stronger signal.
+#
+# Stack-driven AppInstances do not apply App parameter defaults. Every value below is guarded
+# with `default`, and booleans arrive as the strings "true" and "false".
+#
+# Keep `timeout` below the Platform per-deploy cap of 30m, and each task timeout above `timeout`.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: nvidia-gpu-operator-stack-gate
+spec:
+  displayName: '[NVIDIA GPU Operator Stack] Readiness gate'
+  description: >-
+    Waits for a resource to report ready and for scheduler capacity, then marks a contract
+    ConfigMap ready so later tasks can read its values as Stack outputs.
+  # Stack outputs can be read only from a namespace a task deploys into. Callers read the
+  # contract from this namespace.
+  defaultNamespace: gpu-stack
+  wait: true
+  timeout: 25m
+  config:
+    manifests: |-
+      {{- define "gate.name" -}}
+      {{- .Values.gateName | default "gate" -}}
+      {{- end -}}
+
+      {{- define "gate.fullname" -}}
+      {{- printf "%s-%s" (.Release.Name | trunc 40 | trimSuffix "-") (include "gate.name" . | trunc 12 | trimSuffix "-") -}}
+      {{- end -}}
+
+      {{- define "gate.labels" -}}
+      app.kubernetes.io/name: nvidia-gpu-operator-stack-gate
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: {{ include "gate.name" . | quote }}
+      {{- end -}}
+
+      {{- define "gate.check" -}}
+      set -eu
+
+      log() { echo "$(date -u '+%H:%M:%S') [$GATE_NAME] $*"; }
+      fail() { log "ERROR: $*" >&2; exit 1; }
+
+      deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+      remaining() { echo $(( deadline - $(date +%s) )); }
+
+      if [ -z "$WAIT_RESOURCE" ] && [ "$CAPACITY_MIN" -le 0 ] && [ -z "$CONTRACT_NAME" ]; then
+        fail "nothing to do: no wait resource, no minimum capacity, and no contract"
+      fi
+
+      kc() {
+        if [ -n "$WAIT_NAMESPACE" ]; then
+          kubectl -n "$WAIT_NAMESPACE" "$@"
+        else
+          kubectl "$@"
+        fi
+      }
+
+      if [ -n "$WAIT_RESOURCE" ]; then
+        # Poll instead of `kubectl wait --for=create`. This also covers a CRD that is not served yet.
+        log "waiting for $WAIT_RESOURCE to exist"
+        until kc get "$WAIT_RESOURCE" >/dev/null 2>&1; do
+          [ "$(remaining)" -gt 0 ] || fail "$WAIT_RESOURCE did not appear within ${TIMEOUT_SECONDS}s"
+          sleep "$POLL_SECONDS"
+        done
+        if [ "$WAIT_CONDITION" = rollout ]; then
+          # Every scheduled pod of a Deployment, DaemonSet, or StatefulSet is updated and available.
+          log "waiting for $WAIT_RESOURCE to finish rolling out"
+          [ "$(remaining)" -gt 0 ] || fail "no time left to wait for $WAIT_RESOURCE"
+          kc rollout status "$WAIT_RESOURCE" --timeout="$(remaining)s" \
+            || fail "$WAIT_RESOURCE did not finish rolling out within ${TIMEOUT_SECONDS}s"
+        elif [ -n "$WAIT_CONDITION" ]; then
+          log "waiting for $WAIT_RESOURCE --for=$WAIT_CONDITION"
+          [ "$(remaining)" -gt 0 ] || fail "no time left to wait for $WAIT_RESOURCE"
+          kc wait "$WAIT_RESOURCE" --for="$WAIT_CONDITION" --timeout="$(remaining)s" \
+            || fail "$WAIT_RESOURCE did not report $WAIT_CONDITION within ${TIMEOUT_SECONDS}s"
+        fi
+        log "$WAIT_RESOURCE is ready"
+      fi
+
+      observed=0
+      if [ -n "$CAPACITY_RESOURCE" ]; then
+        escaped=$(printf '%s' "$CAPACITY_RESOURCE" | sed 's/\./\\./g')
+        count() {
+          if [ -n "$CAPACITY_NODE_SELECTOR" ]; then
+            kubectl get nodes -l "$CAPACITY_NODE_SELECTOR" -o "jsonpath={.items[*].status.allocatable['${escaped}']}"
+          else
+            kubectl get nodes -o "jsonpath={.items[*].status.allocatable['${escaped}']}"
+          fi | tr ' ' '\n' | awk '{ sum += $1 } END { print sum + 0 }'
+        }
+        while :; do
+          observed=$(count)
+          [ "$observed" -ge "$CAPACITY_MIN" ] && break
+          [ "$(remaining)" -gt 0 ] || fail "only $observed allocatable $CAPACITY_RESOURCE after ${TIMEOUT_SECONDS}s, wanted $CAPACITY_MIN. Check the device plugin pods and node allocatable."
+          log "allocatable $CAPACITY_RESOURCE: ${observed}/${CAPACITY_MIN}"
+          sleep "$POLL_SECONDS"
+        done
+        log "$observed allocatable $CAPACITY_RESOURCE"
+      fi
+
+      # The Helm release owns the contract and its static keys. The gate adds only keys that the
+      # release does not declare, so a later Helm upgrade does not reset them.
+      if [ -n "$CONTRACT_NAME" ]; then
+        verified_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        kubectl -n "$CONTRACT_NAMESPACE" patch configmap "$CONTRACT_NAME" --type merge \
+          -p "{\"data\":{\"ready\":\"true\",\"observedCount\":\"$observed\",\"resourceName\":\"$CAPACITY_RESOURCE\",\"verifiedAt\":\"$verified_at\"}}"
+        log "marked $CONTRACT_NAMESPACE/$CONTRACT_NAME ready"
+      fi
+
+      log "gate passed"
+      {{- end -}}
+
+      {{- $waitResource := "" -}}
+      {{- if ne (toString .Values.waitEnabled) "false" -}}
+      {{- $waitResource = .Values.waitResource | default "" -}}
+      {{- end -}}
+      {{- $capacityMin := .Values.capacityMin | default "0" | toString -}}
+      {{- $contractName := .Values.contractName | default "" -}}
+      {{- /* A Job spec is immutable. Changing any setting names a new Job, which also re-runs the gate. */ -}}
+      {{- $hash := printf "%s|%s|%s|%s|%s|%s|%s|%s|%s" $waitResource (.Values.waitNamespace | default "") (.Values.waitCondition | default "") (.Values.capacityResource | default "") $capacityMin (.Values.capacityNodeSelector | default "") $contractName (.Values.contractData | default "") (.Values.timeoutSeconds | default "1380" | toString) | sha256sum | trunc 8 -}}
+
+      {{- if $contractName }}
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: {{ $contractName }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      {{- with .Values.contractData }}
+      data:
+        {{- . | nindent 2 }}
+      {{- end }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ include "gate.fullname" . }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: [{{ $contractName | quote }}]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ include "gate.fullname" . }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      subjects:
+        - kind: ServiceAccount
+          name: {{ include "gate.fullname" . }}
+          namespace: {{ .Release.Namespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ include "gate.fullname" . }}
+      ---
+      {{- end }}
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: {{ include "gate.fullname" . }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      ---
+      # Read-only, cluster-wide: the watched kind and node allocatable.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: {{ include "gate.fullname" . }}-{{ .Release.Namespace }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      rules:
+        {{- if and $waitResource .Values.watchResources }}
+        - apiGroups: [{{ .Values.watchAPIGroup | default "" | quote }}]
+          resources: [{{ .Values.watchResources | quote }}]
+          verbs: ["get", "list", "watch"]
+        {{- end }}
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: {{ include "gate.fullname" . }}-{{ .Release.Namespace }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      subjects:
+        - kind: ServiceAccount
+          name: {{ include "gate.fullname" . }}
+          namespace: {{ .Release.Namespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: {{ include "gate.fullname" . }}-{{ .Release.Namespace }}
+      ---
+      # No ttlSecondsAfterFinished: the completed Job and its log stay until the release is removed.
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{ include "gate.fullname" . }}-{{ $hash }}
+        labels:
+          {{- include "gate.labels" . | nindent 4 }}
+      spec:
+        backoffLimit: 2
+        activeDeadlineSeconds: {{ add (.Values.timeoutSeconds | default "1380" | int) 60 }}
+        template:
+          metadata:
+            labels:
+              {{- include "gate.labels" . | nindent 8 }}
+          spec:
+            serviceAccountName: {{ include "gate.fullname" . }}
+            restartPolicy: Never
+            {{- with .Values.cpuNodeSelector }}
+            {{- $kv := splitn "=" 2 . }}
+            nodeSelector:
+              {{ $kv._0 }}: {{ $kv._1 | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: gate
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                env:
+                  # kubectl writes a discovery cache under $HOME. The root filesystem is read-only.
+                  - name: HOME
+                    value: /tmp
+                  - name: KUBECACHEDIR
+                    value: /tmp/.kube-cache
+                  - name: GATE_NAME
+                    value: {{ include "gate.name" . | quote }}
+                  - name: WAIT_RESOURCE
+                    value: {{ $waitResource | quote }}
+                  - name: WAIT_NAMESPACE
+                    value: {{ .Values.waitNamespace | default "" | quote }}
+                  - name: WAIT_CONDITION
+                    value: {{ .Values.waitCondition | default "" | quote }}
+                  - name: CAPACITY_RESOURCE
+                    value: {{ .Values.capacityResource | default "" | quote }}
+                  - name: CAPACITY_MIN
+                    value: {{ $capacityMin | quote }}
+                  - name: CAPACITY_NODE_SELECTOR
+                    value: {{ .Values.capacityNodeSelector | default "" | quote }}
+                  - name: CONTRACT_NAME
+                    value: {{ $contractName | quote }}
+                  - name: CONTRACT_NAMESPACE
+                    value: {{ .Release.Namespace | quote }}
+                  - name: TIMEOUT_SECONDS
+                    value: {{ .Values.timeoutSeconds | default "1380" | toString | quote }}
+                  - name: POLL_SECONDS
+                    value: "10"
+                command: ["sh", "-c"]
+                args:
+                  - |
+      {{ include "gate.check" . | indent 14 }}
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - name: tmp
+                emptyDir: {}
+  parameters:
+    - variable: gateName
+      label: Gate name
+      description: Short name for this gate. Appears in object names, the component label, and log lines.
+      type: string
+      defaultValue: gate
+    - variable: cpuNodeSelector
+      label: CPU node selector
+      description: Optional key=value label selector for the node that runs the gate Job.
+      type: string
+    - variable: waitEnabled
+      label: Wait for the resource
+      description: Set false to skip the resource wait. The capacity check still applies.
+      type: boolean
+      defaultValue: "true"
+      section: Wait
+    - variable: waitResource
+      label: Resource to wait for
+      description: TYPE/NAME passed to kubectl, for example clusterpolicy/cluster-policy. Empty skips the wait.
+      type: string
+      section: Wait
+    - variable: waitNamespace
+      label: Resource namespace
+      description: Empty for a cluster-scoped resource.
+      type: string
+      section: Wait
+    - variable: waitCondition
+      label: Wait condition
+      description: >-
+        Passed to kubectl wait --for, or rollout to wait for kubectl rollout status. Empty waits only
+        for the resource to exist.
+      type: string
+      section: Wait
+    - variable: watchAPIGroup
+      label: Watched API group
+      description: API group granted read access. Empty for core resources.
+      type: string
+      section: Wait
+    - variable: watchResources
+      label: Watched resource plural
+      description: Plural resource name granted read access, for example clusterpolicies or daemonsets.
+      type: string
+      section: Wait
+    - variable: capacityResource
+      label: Capacity resource
+      description: Scheduler resource to count, for example nvidia.com/gpu. Empty skips the count.
+      type: string
+      section: Capacity
+    - variable: capacityMin
+      label: Minimum allocatable
+      description: Minimum total allocatable capacity across the selected nodes. 0 counts without blocking.
+      type: number
+      defaultValue: "0"
+      section: Capacity
+    - variable: capacityNodeSelector
+      label: Capacity node selector
+      description: Optional label selector limiting which nodes count toward capacity.
+      type: string
+      section: Capacity
+    - variable: contractName
+      label: Contract ConfigMap name
+      description: ConfigMap marked ready once every check passes. Empty publishes nothing.
+      type: string
+      section: Contract
+    - variable: contractData
+      label: Contract data
+      description: >-
+        YAML string key/value pairs written into the contract. The gate adds ready, observedCount,
+        resourceName, and verifiedAt when it passes.
+      type: multiline
+      section: Contract
+    - variable: timeoutSeconds
+      label: Gate timeout (seconds)
+      description: Overall deadline for every check. Keep it below the App timeout so the Job fails with a reason.
+      type: number
+      defaultValue: "1380"

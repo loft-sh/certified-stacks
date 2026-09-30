@@ -1,0 +1,206 @@
+# Use this template on a tenant cluster with at least one NVIDIA GPU worker.
+#
+# Timeouts: each task timeout exceeds its App `timeout` or its gate Job deadline, and every App
+# `timeout` stays below the Platform per-deploy cap of 30m. The task timeout firing is then the
+# reporting path for a stuck step. Write durations with seconds (`15m0s`): the API server stores
+# them canonically, and a GitOps copy written as `15m` drifts forever.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: nvidia-gpu-operator-stack
+  annotations:
+    vcluster.com/certified: "true"
+spec:
+  displayName: NVIDIA GPU Operator
+  description: >-
+    cert-manager, the NVIDIA GPU Operator, and NVSentinel, gated on GPUs the scheduler can
+    actually allocate and proven with a CUDA smoke test.
+  icon: https://assets.nvidiagrid.net/ngc/logos/GPUoperator.png
+  parameters:
+    - variable: cpuNodeSelector
+      label: CPU node selector
+      description: >-
+        Optional key=value node label for controllers, cert-manager, and gate Jobs, for example
+        workload.example.com/pool=cpu-services. Empty places them on any untainted node.
+      type: string
+      validation: '^$|^[A-Za-z0-9]([-A-Za-z0-9_./]*[A-Za-z0-9])?=([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$'
+    - variable: gpuNodeSelector
+      label: GPU node selector
+      description: >-
+        Optional key=value node label for GPU workers, for example workload.example.com/pool=gpu-compute.
+        Empty counts every node and places NVSentinel on nvidia.com/gpu.present=true.
+      type: string
+      validation: '^$|^[A-Za-z0-9]([-A-Za-z0-9_./]*[A-Za-z0-9])?=([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$'
+    - variable: driverPreinstalled
+      label: NVIDIA driver preinstalled
+      description: Enable when the node OS image already contains the NVIDIA driver. GPU Operator still installs the container toolkit.
+      type: boolean
+      defaultValue: "false"
+    - variable: certManagerPreinstalled
+      label: cert-manager already installed
+      description: >-
+        Enable when the tenant cluster already runs cert-manager in the cert-manager namespace.
+        The cert-manager task then verifies that installation instead of installing its own.
+      type: boolean
+      defaultValue: "false"
+    - variable: waitForClusterPolicy
+      label: Gate on ClusterPolicy as well as GPU capacity
+      description: >-
+        Off by default. The gpuready gate checks allocatable GPU capacity, which decides whether a
+        GPU pod can be scheduled. Enable to also wait until every GPU Operator operand is ready.
+      type: boolean
+      defaultValue: "false"
+    - variable: minGPUs
+      label: Minimum allocatable GPUs
+      description: GPUs the scheduler must advertise before the gpuready gate passes.
+      type: number
+      required: true
+      defaultValue: "1"
+      min: 1
+
+  # Values the gpuready gate publishes, readable from the StackInstance outputs subresource.
+  publishedOutputs:
+    - name: gpucount
+      fromTask:
+        task: gpuready
+        output: gpucount
+    - name: dcgmhost
+      fromTask:
+        task: gpuready
+        output: dcgmhost
+    - name: dcgmport
+      fromTask:
+        task: gpuready
+        output: dcgmport
+
+  tasks:
+    # A task cannot be skipped. With certManagerPreinstalled, this task references the gate App
+    # instead, which installs nothing and fails unless cert-manager's webhook is Available. The
+    # nvsentinel dependency stays honest either way. Each App ignores the other's parameters.
+    - name: cert-manager
+      timeout: 15m0s
+      app:
+        templateRef:
+          name: 'nvidia-gpu-operator-stack-{{ if eq (toString .Values.certManagerPreinstalled) "true" }}gate{{ else }}cert-manager{{ end }}'
+        parameters:
+          cpuNodeSelector: '{{ .Values.cpuNodeSelector }}'
+          gateName: cert-manager
+          waitResource: deployment/cert-manager-webhook
+          waitNamespace: cert-manager
+          waitCondition: condition=Available
+          watchAPIGroup: apps
+          watchResources: deployments
+          capacityMin: "0"
+          timeoutSeconds: "540"
+
+    - name: gpu-operator
+      timeout: 20m0s
+      app:
+        templateRef:
+          name: nvidia-gpu-operator-stack-gpu-operator
+        parameters:
+          cpuNodeSelector: '{{ .Values.cpuNodeSelector }}'
+          gpuNodeSelector: '{{ .Values.gpuNodeSelector }}'
+          driverPreinstalled: '{{ .Values.driverPreinstalled }}'
+
+    # The GPU Operator release is healthy long before a driver is built and the device plugin
+    # registers. This gate holds until the scheduler advertises minGPUs, then marks the contract
+    # ready. The name has no hyphen: a task that declares outputs must be letters and digits.
+    - name: gpuready
+      dependsOn:
+        - gpu-operator
+      timeout: 28m0s
+      app:
+        templateRef:
+          name: nvidia-gpu-operator-stack-gate
+        parameters:
+          cpuNodeSelector: '{{ .Values.cpuNodeSelector }}'
+          gateName: gpuready
+          waitEnabled: '{{ .Values.waitForClusterPolicy }}'
+          waitResource: clusterpolicy/cluster-policy
+          waitCondition: jsonpath={.status.state}=ready
+          watchAPIGroup: nvidia.com
+          watchResources: clusterpolicies
+          capacityResource: nvidia.com/gpu
+          capacityMin: '{{ .Values.minGPUs }}'
+          capacityNodeSelector: '{{ .Values.gpuNodeSelector }}'
+          contractName: gpu-stack-contract
+          # The gate App is workload-agnostic. The GPU keys belong with the Stack that publishes them.
+          contractData: |
+            dcgmHost: nvidia-dcgm.gpu-operator.svc
+            dcgmPort: "5555"
+          timeoutSeconds: "1380"
+      outputs:
+        - name: gpucount
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: gpu-stack
+            name: gpu-stack-contract
+            jsonPath: '{.data.observedCount}'
+        - name: dcgmhost
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: gpu-stack
+            name: gpu-stack-contract
+            jsonPath: '{.data.dcgmHost}'
+        - name: dcgmport
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: gpu-stack
+            name: gpu-stack-contract
+            jsonPath: '{.data.dcgmPort}'
+
+    # GPU Operator creates dcgm-exporter and nvidia-dcgm together, with nothing ordering them.
+    # NVSentinel started against a DCGM host engine that is not serving reports
+    # GpuDcgmConnectivityFailure. This gate only waits: no capacity check, no contract.
+    # It follows gpuready so a GPU node exists: a DaemonSet that schedules no pods yet has
+    # already finished rolling out.
+    - name: dcgmready
+      dependsOn:
+        - gpuready
+      timeout: 15m0s
+      app:
+        templateRef:
+          name: nvidia-gpu-operator-stack-gate
+        parameters:
+          cpuNodeSelector: '{{ .Values.cpuNodeSelector }}'
+          gateName: dcgmready
+          waitResource: daemonset/nvidia-dcgm
+          waitNamespace: gpu-operator
+          waitCondition: rollout
+          watchAPIGroup: apps
+          watchResources: daemonsets
+          capacityMin: "0"
+          timeoutSeconds: "780"
+
+    # Proves the GPU computes, not only that the scheduler advertised it. Runs beside NVSentinel.
+    - name: gpu-smoke-test
+      dependsOn:
+        - gpuready
+      timeout: 12m0s
+      app:
+        templateRef:
+          name: nvidia-gpu-operator-stack-smoke-test
+        parameters:
+          gpuNodeSelector: '{{ .Values.gpuNodeSelector }}'
+          gpuCount: "1"
+
+    - name: nvsentinel
+      dependsOn:
+        - gpuready
+        - dcgmready
+        - cert-manager
+      timeout: 20m0s
+      app:
+        templateRef:
+          name: nvidia-gpu-operator-stack-nvsentinel
+        parameters:
+          cpuNodeSelector: '{{ .Values.cpuNodeSelector }}'
+          gpuNodeSelector: '{{ .Values.gpuNodeSelector }}'
+          driverPreinstalled: '{{ .Values.driverPreinstalled }}'
+          # Read from the contract the gate published rather than hard-coded here.
+          dcgmHost: '{{ .Outputs.gpuready.dcgmhost }}'
+          dcgmPort: '{{ .Outputs.gpuready.dcgmport }}'
