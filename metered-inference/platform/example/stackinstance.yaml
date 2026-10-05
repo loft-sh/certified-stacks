@@ -1,0 +1,23 @@
+# Sets up vCluster Platform for metered inference tenant clusters, with every default: a kubevirt
+# NodeProvider that installs KubeVirt and CDI, the tenant Stack, and the tenant cluster template,
+# built from the gateway Stack's settings.
+#
+# Install the metered-inference-gateway Stack on the same cluster first; this Stack waits for its
+# endpoint contract. Apply it in a project namespace, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: metered-inference-platform
+spec:
+  displayName: Metered inference platform configuration
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: metered-inference-platform
+  parameters:
+    # true when the nodes have no /dev/kvm: VMs then run in software, much more slowly.
+    kubeVirtEmulation: false
+  prunePolicy: Prune

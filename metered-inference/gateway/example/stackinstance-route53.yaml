@@ -1,0 +1,39 @@
+# Production-style install on AWS: tenant endpoints under inference.example.com with Let's Encrypt
+# certificates, the wildcard record in Route 53, and usage shown to each tenant in vCluster Platform.
+#
+# Before applying:
+#   - Create the external-dns-credentials Secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY,
+#     or leave it out and set awsRoleArn for IRSA (see the README).
+#   - The Platform must have no other fleet observability connector.
+#
+# AWS load balancers publish a hostname, not an IPv4 address, so a domain is required here.
+# Apply it in a project namespace, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: metered-inference-gateway
+spec:
+  displayName: Metered inference gateway
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: metered-inference-gateway
+  parameters:
+    domain: inference.example.com
+    serviceAnnotations: |
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    tlsIssuer: letsencrypt
+    dnsProvider: route53
+    dnsCredentialsSecret: external-dns-credentials
+    awsRegion: us-east-1
+    clusterName: loft-cluster
+    metricsRetention: 90d
+    metricsStorageSize: 50Gi
+    platformIntegration: true
+    grafanaAdminGroup: platform-admins
+  prunePolicy: Prune

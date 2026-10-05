@@ -1,0 +1,28 @@
+# Step 1, skipped. The certmanager task selects this App when `installCertManager` is false or
+# `tlsIssuer` is none. A StackTemplate task cannot be skipped, so this App records why nothing was
+# installed instead.
+#
+# With `installCertManager: false` and a TLS issuer, the existing cert-manager must run with
+# `config.gatewayAPI.enabled: true` (cert-manager 1.15 or later) for Let's Encrypt HTTP-01, and must
+# have been started after the Gateway API CRDs were installed.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-cert-manager-skip
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 1] cert-manager (skipped)'
+  description: Installs nothing. Used when cert-manager is managed outside this Stack or TLS is off.
+  defaultNamespace: inference-gateway
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-cert-manager-skipped
+      data:
+        reason: |
+          cert-manager was not installed by the metered inference gateway Stack. Either TLS is off
+          (tlsIssuer=none) or the cluster already runs cert-manager (installCertManager=false).
+  parameters: []

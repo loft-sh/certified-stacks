@@ -1,0 +1,21 @@
+# Step 3: agentgateway CRDs (AgentgatewayBackend, AgentgatewayParameters, AgentgatewayPolicy,
+# AgentgatewayModel). The chart ships them as templates, so Helm upgrades them with the release.
+# Keep the version in step with the controller in step 4.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-agentgateway-crds
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 3] agentgateway CRDs'
+  description: Installs the agentgateway custom resource definitions.
+  defaultNamespace: agentgateway-system
+  wait: true
+  timeout: 5m
+  config:
+    chart:
+      name: agentgateway-crds
+      repoURL: oci://cr.agentgateway.dev/charts
+      version: v1.5.0
+  parameters: []

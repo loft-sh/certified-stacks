@@ -1,0 +1,41 @@
+# Step 3, skipped. The clustertemplate task selects this App when `installClusterTemplate` is false,
+# for example because you maintain your own copy of the tenant cluster template. Start from
+# metered-inference/source/virtualclustertemplate.yaml, or from the template a platform Stack
+# with installClusterTemplate on created:
+#
+#   kubectl get virtualclustertemplates.management.loft.sh metered-inference-kubevirt -o yaml
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-cluster-template-skip
+  labels:
+    inference.vcluster.com/stack: platform
+spec:
+  displayName: '[Metered Inference Platform - 3] Tenant cluster template (skipped)'
+  description: Creates nothing. Used when the tenant cluster template is managed outside this Stack.
+  defaultNamespace: inference-gateway
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-cluster-template-skipped
+      data:
+        reason: |
+          The tenant cluster template was not created by the metered inference platform Stack
+          (installClusterTemplate=false). Tenant clusters need a template that deploys the
+          metered-inference-kubeai Stack and the metered-inference-endpoint App with matching values.
+  # Declared so the clustertemplate task can pass one parameter set to either App. Nothing reads them.
+  parameters:
+    - variable: domain
+      label: Inference domain
+      type: string
+    - variable: scheme
+      label: Endpoint scheme
+      type: string
+    - variable: tlsIssuer
+      label: TLS issuer
+      type: string
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

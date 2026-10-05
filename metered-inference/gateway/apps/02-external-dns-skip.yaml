@@ -1,0 +1,44 @@
+# Step 2, skipped. The externaldns task selects this App when `dnsProvider` is none: the wildcard
+# record for the Gateway address is created by hand, or `domain` is empty and the sslip.io
+# fallback resolves tenant hostnames instead.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-external-dns-skip
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 2] external-dns (skipped)'
+  description: Installs nothing. Used when DNS for the inference domain is managed outside this Stack.
+  defaultNamespace: inference-gateway
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-external-dns-skipped
+      data:
+        reason: |
+          external-dns was not installed by the metered inference gateway Stack (dnsProvider=none).
+          Point a wildcard record for the inference domain at the Gateway address yourself, or
+          leave the domain empty to use <gateway-address>.sslip.io.
+  # Declared so the externaldns task can pass one parameter set to either App. Nothing reads them.
+  parameters:
+    - variable: provider
+      label: DNS provider
+      type: string
+    - variable: domain
+      label: Inference domain
+      type: string
+    - variable: credentialsSecret
+      label: Credentials Secret
+      type: string
+    - variable: awsRegion
+      label: AWS region
+      type: string
+    - variable: awsRoleArn
+      label: AWS IAM role ARN
+      type: string
+    - variable: txtOwnerId
+      label: TXT owner ID
+      type: string

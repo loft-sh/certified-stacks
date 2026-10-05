@@ -1,0 +1,36 @@
+# Serves a model from an existing tenant cluster, without the Metered inference (KubeVirt) template.
+#
+# The tenant cluster's nodes must be KubeVirt VMs. Pair this with example/appinstance-endpoint.yaml,
+# which publishes the endpoints through the shared Gateway, and use the same hostname, API key, and
+# node ports in both. The URLs here assume the gateway Stack's endpointDomain is
+# inference.example.com and the tenant cluster is `my-tenant-cluster` in project `default`.
+#
+# Apply it in the project namespace that owns the tenant cluster, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: metered-inference-kubeai
+spec:
+  displayName: Metered inference (KubeAI)
+  owner:
+    user: admin
+  destination:
+    virtualCluster:
+      name: my-tenant-cluster
+  templateRef:
+    name: metered-inference-kubeai
+  parameters:
+    modelURL: ollama://qwen2.5:1.5b
+    modelId: qwen2-5-1-5b
+    engine: OLlama
+    apiURL: https://my-tenant-cluster.default.inference.example.com/v1
+    chatURL: https://chat.my-tenant-cluster.default.inference.example.com
+    # Replace with your own, for example `openssl rand -hex 24`. Never commit a real key.
+    apiKey: replace-with-a-random-key
+    # true only when the gateway Stack's tlsIssuer is letsencrypt.
+    verifyTLS: false
+    apiNodePort: "30080"
+    chatNodePort: "30081"
+    verifyPublicEndpoint: true
+    trafficGenerators: 1
+  prunePolicy: Prune

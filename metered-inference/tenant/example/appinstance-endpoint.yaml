@@ -1,0 +1,36 @@
+# Publishes an existing tenant cluster's endpoints through the shared Gateway, without the Metered
+# inference (KubeVirt) template. It runs the metered-inference-endpoint App in the tenant cluster's
+# namespace on the control plane cluster, so it needs the tenant identity passed explicitly.
+#
+# Use the same hostnames, API key, and node ports as example/stackinstance-tenant-cluster.yaml. The
+# namespace is loft-<project>-v-<tenant cluster> with the Platform's default naming; check it with
+# `kubectl get ns -l loft.sh/vcluster-instance-name=<tenant cluster>` on the control plane cluster.
+#
+# Apply it in the project namespace, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: AppInstance
+metadata:
+  name: my-tenant-cluster-inference-endpoint
+spec:
+  displayName: Inference endpoint for my-tenant-cluster
+  owner:
+    user: admin
+  templateRef:
+    name: metered-inference-endpoint
+  destination:
+    cluster:
+      name: loft-cluster
+      namespace: loft-default-v-my-tenant-cluster
+  parameters:
+    tenantCluster: my-tenant-cluster
+    project: default
+    apiHostname: my-tenant-cluster.default.inference.example.com
+    chatHostname: chat.my-tenant-cluster.default.inference.example.com
+    apiNodePort: "30080"
+    chatNodePort: "30081"
+    clusterIssuer: metered-inference
+    apiKey: replace-with-a-random-key
+    gatewayName: inference
+    gatewayNamespace: inference-gateway
+    vmNamespace: kubevirt
+    schedule: "* * * * *"

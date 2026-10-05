@@ -1,0 +1,26 @@
+# Step 4: the agentgateway controller. It owns the `agentgateway` GatewayClass and deploys one
+# proxy per Gateway; step 5 creates the shared one.
+#
+# `monitoring.enabled` stays false: it renders Prometheus Operator PodMonitor and ServiceMonitor
+# objects, and this Stack's Prometheus discovers the proxies itself (step 6).
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-agentgateway
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 4] agentgateway'
+  description: Installs the agentgateway controller, which programs the shared inference Gateway.
+  defaultNamespace: agentgateway-system
+  wait: true
+  timeout: 8m
+  config:
+    chart:
+      name: agentgateway
+      repoURL: oci://cr.agentgateway.dev/charts
+      version: v1.5.0
+    values: |-
+      monitoring:
+        enabled: false
+  parameters: []

@@ -1,0 +1,144 @@
+# Step 0: wait for the gateway Stack's endpoint contract.
+#
+# The metered-inference-gateway Stack publishes how tenant endpoints are reached in the
+# `metered-inference-gateway` ConfigMap in `inference-gateway`: the domain, the scheme, and the TLS
+# issuer. It only writes the domain once its Gateway has an address. This App waits until the
+# domain is there; the StackTemplate then reads those values as the contract task's outputs and
+# builds the tenant cluster template from them, so nothing is copied by hand.
+#
+# vCluster Platform only reads Stack outputs from namespaces the Stack's own Apps are installed
+# in, which is why this App runs in `inference-gateway`.
+#
+# The Platform reads the outputs once, when the task first turns healthy. Changing the
+# `gatewayRevision` parameter re-runs this App and so re-reads them.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-gateway-contract
+  labels:
+    inference.vcluster.com/stack: platform
+spec:
+  displayName: '[Metered Inference Platform - 0] Gateway contract'
+  description: Waits for the metered inference gateway Stack's endpoint contract, which the platform Stack builds the tenant cluster template from.
+  defaultNamespace: inference-gateway
+  wait: true
+  # Keep it below the contract task's timeout.
+  timeout: 15m
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metered-inference-gateway-contract
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: metered-inference-gateway-contract
+        namespace: {{ .Release.Namespace }}
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: ["metered-inference-gateway"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: metered-inference-gateway-contract
+        namespace: {{ .Release.Namespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: metered-inference-gateway-contract
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-gateway-contract
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: metered-inference-gateway-contract
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+        labels:
+          # Changes with gatewayRevision, so the Platform re-reads the contract.
+          inference.vcluster.com/gateway-revision: {{ .Values.gatewayRevision | default "1" | quote }}
+      spec:
+        # One attempt: a retry would repeat the wait and outlast Helm's timeout, hiding the reason.
+        # The Stack retries the task instead.
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: metered-inference-gateway-contract
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: contract
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: NAMESPACE
+                    value: {{ .Release.Namespace }}
+                  # Below the App's Helm timeout.
+                  - name: CONTRACT_TIMEOUT_SECONDS
+                    value: "720"
+                  - name: POLL_SECONDS
+                    value: "10"
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    contract='{}'
+                    published() {
+                      current=$(kubectl -n "$NAMESPACE" get configmap metered-inference-gateway -o json 2>/dev/null) || return 1
+                      contract=$current
+                      printf '%s' "$contract" | jq -e '.data.domain // "" | length > 0' >/dev/null
+                    }
+                    echo "waiting for the gateway Stack's contract in ${NAMESPACE}/metered-inference-gateway"
+                    deadline=$(( $(date +%s) + CONTRACT_TIMEOUT_SECONDS ))
+                    until published; do
+                      if [ "$(date +%s)" -ge "$deadline" ]; then
+                        echo "The metered-inference-gateway Stack has not published its endpoint contract (a domain in ConfigMap ${NAMESPACE}/metered-inference-gateway) after ${CONTRACT_TIMEOUT_SECONDS}s. Install that Stack on this cluster first, and wait for its gateway task." >&2
+                        exit 1
+                      fi
+                      sleep "$POLL_SECONDS"
+                    done
+                    printf '%s' "$contract" | jq -e '.data.scheme == "http" or .data.scheme == "https"' >/dev/null || {
+                      echo "ConfigMap ${NAMESPACE}/metered-inference-gateway has no valid scheme. Re-apply the gateway Stack's Apps." >&2
+                      exit 1
+                    }
+                    printf '%s' "$contract" | jq -r '.data | "gateway contract: \(.scheme)://<tenant-cluster>.<project>.\(.domain), TLS issuer \(.tlsIssuer)"'
+  parameters:
+    - variable: gatewayRevision
+      label: Gateway settings revision
+      description: Change it to re-read the gateway Stack's contract.
+      type: string
+      defaultValue: "1"
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

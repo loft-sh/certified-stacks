@@ -1,0 +1,359 @@
+# One model served by KubeAI inside the tenant cluster, gated on it actually answering.
+#
+# A post-install hook waits until the model is listed on the OpenAI endpoint, a replica is ready
+# (unless minReplicas is 0), and the endpoint answers on a node's address and node port, which is
+# the path the shared Gateway uses. With `verifyPublicEndpoint`, it then waits until the public URL
+# answers through the Gateway too, which proves the control plane cluster side (endpoint App, DNS,
+# certificate) end to end. It records the result in the report ConfigMap, which the Stack reads
+# as outputs.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-model
+  labels:
+    inference.vcluster.com/stack: kubeai
+spec:
+  displayName: '[Metered Inference KubeAI] Served model'
+  description: Creates a KubeAI Model and waits until it answers, locally and through the shared inference Gateway.
+  defaultNamespace: kubeai
+  wait: true
+  # Helm's wait on the report hook, which gives up after readyTimeoutSeconds. Keep
+  # readyTimeoutSeconds < this < the model task's timeout, or a cold model pull fails the release
+  # while the model is still loading.
+  timeout: 17m
+  config:
+    manifests: |-
+      apiVersion: kubeai.org/v1
+      kind: Model
+      metadata:
+        name: {{ .Values.modelId }}
+        namespace: {{ .Release.Namespace }}
+        labels:
+          app.kubernetes.io/name: {{ .Values.modelId }}
+          app.kubernetes.io/managed-by: vcluster-platform
+        annotations:
+          inference.vcluster.com/source-url: {{ .Values.modelURL | quote }}
+      spec:
+        features: [TextGeneration]
+        url: {{ .Values.modelURL | quote }}
+        engine: {{ .Values.engine | default "OLlama" }}
+        resourceProfile: {{ .Values.resourceProfile | default "cpu:1" | quote }}
+      {{- if .Values.envVars }}
+        env:
+        {{- range $pair := splitList "," .Values.envVars }}
+          {{ (splitn "=" 2 $pair)._0 | trim }}: {{ (splitn "=" 2 $pair)._1 | trim | quote }}
+        {{- end }}
+      {{- end }}
+        minReplicas: {{ .Values.minReplicas | default "1" }}
+        maxReplicas: {{ .Values.maxReplicas | default "1" }}
+        targetRequests: {{ .Values.targetRequests | default "4" }}
+      {{- if .Values.engineArgs }}
+        args:
+        {{- range $arg := splitList "," .Values.engineArgs }}
+          - {{ $arg | trim | quote }}
+        {{- end }}
+      {{- end }}
+      ---
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: inference-api-key
+        namespace: {{ .Release.Namespace }}
+      type: Opaque
+      stringData:
+        # The key clients send as `Authorization: Bearer <key>`. Empty when the endpoint is open.
+        key: {{ .Values.apiKey | default "" | quote }}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: {{ .Release.Name }}-report
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "-5"
+          helm.sh/hook-delete-policy: before-hook-creation
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ .Release.Name }}-report
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "-5"
+          helm.sh/hook-delete-policy: before-hook-creation
+      rules:
+        - apiGroups: ["kubeai.org"]
+          resources: ["models"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["services"]
+          verbs: ["get", "list"]
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get", "create", "update", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ .Release.Name }}-report
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "-5"
+          helm.sh/hook-delete-policy: before-hook-creation
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ .Release.Name }}-report
+      subjects:
+        - kind: ServiceAccount
+          name: {{ .Release.Name }}-report
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: {{ .Release.Namespace }}-{{ .Release.Name }}-report
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "-5"
+          helm.sh/hook-delete-policy: before-hook-creation
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: {{ .Release.Namespace }}-{{ .Release.Name }}-report
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "-5"
+          helm.sh/hook-delete-policy: before-hook-creation
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: {{ .Release.Namespace }}-{{ .Release.Name }}-report
+      subjects:
+        - kind: ServiceAccount
+          name: {{ .Release.Name }}-report
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{ .Release.Name }}-report
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-weight: "10"
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        backoffLimit: 2
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            restartPolicy: Never
+            serviceAccountName: {{ .Release.Name }}-report
+            containers:
+              - name: report
+                image: {{ .Values.toolsImage | default "alpine/kubectl:1.36.4" | quote }}
+                env:
+                  - name: MODEL
+                    value: {{ .Values.modelId | quote }}
+                  - name: NS
+                    value: {{ .Release.Namespace | quote }}
+                  - name: MIN_REPLICAS
+                    value: {{ .Values.minReplicas | default "1" | toString | quote }}
+                  - name: READY_TIMEOUT
+                    value: {{ .Values.readyTimeoutSeconds | default "900" | toString | quote }}
+                  - name: API_SERVICE
+                    value: {{ .Values.apiServiceName | default "kubeai" | quote }}
+                  - name: CHAT_SERVICE
+                    value: {{ .Values.chatServiceName | default "open-webui" | quote }}
+                  - name: REPORT
+                    value: {{ .Values.reportName | default "inference-report" | quote }}
+                  - name: API_URL
+                    value: {{ .Values.apiURL | quote }}
+                  - name: CHAT_URL
+                    value: {{ .Values.chatURL | default "" | quote }}
+                  - name: VERIFY_PUBLIC
+                    value: {{ .Values.verifyPublicEndpoint | default "false" | toString | quote }}
+                  - name: VERIFY_TLS
+                    value: {{ if eq (toString .Values.verifyTLS) "false" }}"false"{{ else }}"true"{{ end }}
+                  - name: API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: inference-api-key
+                        key: key
+                command: [/bin/sh, -ec]
+                args:
+                  - |
+                    DEADLINE=$(( $(date +%s) + READY_TIMEOUT ))
+                    left() { [ "$(date +%s)" -lt "${DEADLINE}" ]; }
+
+                    echo "waiting for ${MODEL} to be listed on the OpenAI endpoint"
+                    until wget -q -O- "http://${API_SERVICE}.${NS}.svc.cluster.local/openai/v1/models" 2>/dev/null \
+                          | grep -q "\"id\":\"${MODEL}\""; do
+                      left || { echo "timed out waiting for ${MODEL} on /v1/models"; exit 1; }
+                      sleep 10
+                    done
+                    echo "${MODEL} is registered"
+
+                    if [ "${MIN_REPLICAS}" -gt 0 ]; then
+                      echo "waiting for a ready replica"
+                      until [ "$(kubectl get model "${MODEL}" -n "${NS}" -o jsonpath='{.status.replicas.ready}' 2>/dev/null || echo 0)" -ge 1 ]; do
+                        left || { echo "timed out waiting for a ready replica of ${MODEL}"; exit 1; }
+                        echo " ... $(kubectl get model "${MODEL}" -n "${NS}" -o jsonpath='{.status.replicas}' 2>/dev/null)"
+                        sleep 15
+                      done
+                      echo "a replica is ready"
+                    fi
+
+                    # Any Ready node will do: a node port answers on every node.
+                    NODE_IP=$(kubectl get nodes \
+                      -o jsonpath='{range .items[?(@.status.conditions[-1].status=="True")]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+                      2>/dev/null | head -n1)
+                    NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+                    [ -n "${NODE_IP}" ] || { echo "no Ready node with an InternalIP"; exit 1; }
+
+                    API_PORT=$(kubectl get svc "${API_SERVICE}" -n "${NS}" -o jsonpath='{.spec.ports[0].nodePort}')
+                    [ -n "${API_PORT}" ] || { echo "${API_SERVICE} has no nodePort; is its Service type NodePort?"; exit 1; }
+                    CHAT_PORT=$(kubectl get svc "${CHAT_SERVICE}" -n "${NS}" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                    echo "node ${NODE_NAME} at ${NODE_IP}, api ${API_PORT}, chat ${CHAT_PORT:-none}"
+
+                    echo "checking the node port answers on ${NODE_IP}:${API_PORT}"
+                    until wget -q -O- "http://${NODE_IP}:${API_PORT}/openai/v1/models" 2>/dev/null | grep -q '"object":"list"'; do
+                      left || { echo "no answer on ${NODE_IP}:${API_PORT}"; exit 1; }
+                      sleep 10
+                    done
+                    echo "node port is answering"
+
+                    if [ "${VERIFY_PUBLIC}" = "true" ]; then
+                      echo "checking ${API_URL}/models through the shared Gateway"
+                      TLS=""
+                      [ "${VERIFY_TLS}" = "true" ] || TLS="--no-check-certificate"
+                      public_models() {
+                        if [ -n "${API_KEY}" ]; then
+                          wget -q -O- ${TLS} --header "Authorization: Bearer ${API_KEY}" "${API_URL}/models"
+                        else
+                          wget -q -O- ${TLS} "${API_URL}/models"
+                        fi
+                      }
+                      until public_models 2>/dev/null | grep -q "\"id\":\"${MODEL}\""; do
+                        left || { echo "${API_URL}/models did not list ${MODEL}. Check the metered-inference-endpoint CronJob in the tenant cluster's namespace on the control plane cluster, DNS for the hostname, and its certificate."; exit 1; }
+                        sleep 15
+                      done
+                      echo "public endpoint is answering"
+                    fi
+
+                    kubectl create configmap "${REPORT}" -n "${NS}" \
+                      --from-literal=publicURL="${API_URL}" \
+                      --from-literal=publicChatURL="${CHAT_URL}" \
+                      --from-literal=internalURL="http://${API_SERVICE}.${NS}.svc.cluster.local/openai/v1" \
+                      --from-literal=modelId="${MODEL}" \
+                      --from-literal=nodeIP="${NODE_IP}" \
+                      --from-literal=nodeName="${NODE_NAME}" \
+                      --dry-run=client -o yaml | kubectl apply -f -
+                    echo "wrote ${REPORT}"
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+  parameters:
+    - variable: modelId
+      label: Model ID
+      description: What clients send as `model`, and the Model object's name. A DNS-1123 label of at most 40 characters, which KubeAI enforces.
+      type: string
+      required: true
+      validation: '^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$'
+    - variable: modelURL
+      label: Model source URL
+      type: string
+      required: true
+      defaultValue: ollama://qwen2.5:1.5b
+    - variable: engine
+      label: Serving engine
+      type: string
+      options:
+        - OLlama
+        - VLLM
+      defaultValue: OLlama
+    - variable: resourceProfile
+      label: Resource profile
+      description: KubeAI resource profile and multiplier, cpu:1 or gpu:<count>.
+      type: string
+      defaultValue: cpu:1
+      validation: '^(cpu:1|gpu:[1-8])$'
+    - variable: engineArgs
+      label: Engine arguments
+      description: Comma-separated flags for the model server. Empty for Ollama.
+      type: string
+    - variable: envVars
+      label: Engine environment
+      description: Comma-separated KEY=VALUE pairs set on the model server.
+      type: string
+    - variable: minReplicas
+      label: Minimum replicas
+      type: number
+      defaultValue: "1"
+      min: 0
+      max: 4
+    - variable: maxReplicas
+      label: Maximum replicas
+      type: number
+      defaultValue: "1"
+      min: 1
+      max: 4
+    - variable: targetRequests
+      label: Target requests per replica
+      type: number
+      defaultValue: "4"
+      min: 1
+      max: 128
+    - variable: apiURL
+      label: Public API URL
+      description: The tenant cluster's OpenAI-compatible base URL through the shared Gateway, ending in /v1.
+      type: string
+      required: true
+    - variable: chatURL
+      label: Public chat URL
+      type: string
+    - variable: apiKey
+      label: API key
+      type: password
+    - variable: verifyPublicEndpoint
+      label: Verify the public endpoint
+      description: Also wait until the public API URL lists the model through the shared Gateway.
+      type: boolean
+      defaultValue: "false"
+    - variable: verifyTLS
+      label: Verify the endpoint's certificate
+      description: false when the Gateway's certificate comes from the self-signed or Let's Encrypt staging issuer.
+      type: boolean
+      defaultValue: "true"
+    - variable: apiServiceName
+      label: API Service name
+      type: string
+      defaultValue: kubeai
+    - variable: chatServiceName
+      label: Chat UI Service name
+      type: string
+      defaultValue: open-webui
+    - variable: reportName
+      label: Report ConfigMap name
+      type: string
+      defaultValue: inference-report
+    - variable: readyTimeoutSeconds
+      label: Readiness timeout
+      description: Must be comfortably under the Helm timeout of 17 minutes.
+      type: number
+      defaultValue: "900"
+    - variable: toolsImage
+      label: Tools image
+      description: Any image with kubectl and a busybox wget with TLS.
+      type: string
+      defaultValue: alpine/kubectl:1.36.4

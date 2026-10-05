@@ -1,0 +1,121 @@
+# Step 2: external-dns, publishing one wildcard record for the shared Gateway.
+#
+# The Gateway's proxy Service carries `external-dns.kubernetes.io/hostname: *.<domain>` and a
+# label this release filters on, so external-dns publishes exactly one record and ignores every
+# other Service in the cluster. Every tenant hostname under the domain then resolves to the Gateway
+# as soon as its routes exist, with no per-tenant DNS change and no negative-cache delay.
+#
+# No zone needs configuring. external-dns picks the most specific zone its credentials can see for
+# the record, so the inference domain can be a zone of its own or a subdomain in a parent zone:
+#   route53: filtered to the inference domain, with parent zones allowed. It then lists records only
+#            in the zone that holds the domain, so an IAM policy scoped to that hosted zone works.
+#   gandi:   unfiltered. Scope the personal access token to the domains external-dns may manage.
+#
+# Credentials come from a Secret you create before applying the Stack (see the README):
+#   route53: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Both keys are optional, so on EKS you can
+#            leave the Secret out and set awsRoleArn for IRSA instead.
+#   gandi:   GANDI_PAT, a Gandi personal access token with LiveDNS access to the zone.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-external-dns
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 2] external-dns'
+  description: Publishes the shared inference Gateway's wildcard DNS record in Route 53 or Gandi LiveDNS.
+  defaultNamespace: external-dns
+  wait: true
+  timeout: 5m
+  config:
+    chart:
+      name: external-dns
+      repoURL: https://kubernetes-sigs.github.io/external-dns
+      version: 1.22.0
+    values: |-
+      fullnameOverride: metered-inference-external-dns
+      provider:
+        name: {{ if eq .Values.provider "route53" }}aws{{ else }}gandi{{ end }}
+      sources:
+        - service
+      # Only the shared Gateway's Service carries this label.
+      labelFilter: inference.vcluster.com/external-dns=true
+      policy: sync
+      registry: txt
+      txtOwnerId: {{ .Values.txtOwnerId | default "inference-stack" | quote }}
+      {{- if and (eq .Values.provider "route53") .Values.domain }}
+      # Limits external-dns to the zone that holds the domain, so an IAM policy scoped to that
+      # hosted zone is enough.
+      domainFilters:
+        - {{ .Values.domain | quote }}
+      {{- end }}
+      extraArgs:
+        # Names the ownership TXT record for *.<domain> a-_wildcard.<domain>, or cname-_wildcard
+        # for a load balancer hostname. A literal * is not allowed there. The underscore keeps the
+        # name clear of every <project>.<domain>, because project names cannot contain one, and a
+        # record at <project>.<domain> would stop the wildcard answering for that project.
+        - --txt-wildcard-replacement=_wildcard
+      {{- if eq .Values.provider "route53" }}
+        - --aws-zone-type=public
+        # Accepts a parent zone, such as example.com for inference.example.com.
+        - --aws-zone-match-parent
+      {{- end }}
+      {{- if and (eq .Values.provider "route53") .Values.awsRoleArn }}
+      serviceAccount:
+        annotations:
+          eks.amazonaws.com/role-arn: {{ .Values.awsRoleArn | quote }}
+      {{- end }}
+      env:
+      {{- if eq .Values.provider "route53" }}
+        - name: AWS_DEFAULT_REGION
+          value: {{ .Values.awsRegion | default "us-east-1" | quote }}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.credentialsSecret | default "external-dns-credentials" | quote }}
+              key: AWS_ACCESS_KEY_ID
+              optional: true
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.credentialsSecret | default "external-dns-credentials" | quote }}
+              key: AWS_SECRET_ACCESS_KEY
+              optional: true
+      {{- else }}
+        - name: GANDI_PAT
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.credentialsSecret | default "external-dns-credentials" | quote }}
+              key: GANDI_PAT
+      {{- end }}
+  parameters:
+    - variable: provider
+      label: DNS provider
+      type: string
+      options:
+        - route53
+        - gandi
+      defaultValue: route53
+    - variable: domain
+      label: Inference domain
+      description: The gateway Stack's domain. Route 53 limits external-dns to it; Gandi relies on the token's scope instead.
+      type: string
+    - variable: credentialsSecret
+      label: Credentials Secret
+      description: Secret in the external-dns namespace holding the provider credentials.
+      type: string
+      defaultValue: external-dns-credentials
+    - variable: awsRegion
+      label: AWS region
+      description: Region for the Route 53 API client. Route 53 is global; any valid region works.
+      type: string
+      defaultValue: us-east-1
+    - variable: awsRoleArn
+      label: AWS IAM role ARN
+      description: IRSA role for the external-dns ServiceAccount. Leave empty to use the credentials Secret.
+      type: string
+    - variable: txtOwnerId
+      label: TXT owner ID
+      description: Ownership marker on the records this instance manages. Unique per external-dns writing to the zone.
+      type: string
+      defaultValue: inference-stack

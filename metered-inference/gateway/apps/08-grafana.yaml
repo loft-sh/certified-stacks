@@ -1,0 +1,155 @@
+# Step 8: Grafana, for the showback dashboards in step 9.
+#
+# Standalone (`platformIntegration: false`): Grafana runs in inference-observability with a
+# datasource pointing straight at Prometheus. That datasource sees every tenant, so this Grafana
+# is for platform administrators only, behind the chart's generated admin password.
+#
+# Platform-integrated (`platformIntegration: true`): Grafana runs in the vCluster Platform
+# namespace, the same way the Platform's bundled Fleet Observability Grafana does, because it
+# mounts the Platform's CA, reads its OIDC client Secret, and loads the datasource ConfigMaps the
+# Platform writes there. It is served at `https://<platform-host>/grafana/` through the Platform's
+# own proxy, signs users in with their Platform identity, and has no direct Prometheus
+# datasource: every query goes through the Platform query proxy, which limits a tenant to its own
+# tenant clusters. Members of `grafanaAdminGroup` get the Grafana Admin role; everyone else is a
+# Viewer.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-grafana
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 8] Grafana'
+  description: Serves the token showback dashboards, standalone or through vCluster Platform.
+  defaultNamespace: inference-observability
+  wait: true
+  timeout: 8m
+  config:
+    chart:
+      name: grafana
+      repoURL: oci://ghcr.io/grafana-community/helm-charts
+      version: 13.2.7
+    values: |-
+      {{- /* Compared as a string so a "false" passed through from a Stack stays false. */}}
+      {{- $platform := eq (toString .Values.platformIntegration) "true" }}
+      {{- $ns := .Values.platformNamespace | default "vcluster-platform" }}
+      {{- $host := .Values.platformHost | trimPrefix "https://" | trimPrefix "http://" | trimAll "/" }}
+      fullnameOverride: metered-inference-grafana
+      {{- if $platform }}
+      namespaceOverride: {{ $ns }}
+      {{- end }}
+      persistence:
+        enabled: false
+      testFramework:
+        enabled: false
+      service:
+        type: ClusterIP
+        port: 80
+        targetPort: 3000
+      rbac:
+        # The sidecars only read ConfigMaps in Grafana's own namespace.
+        namespaced: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          memory: 1Gi
+      env:
+        GOMEMLIMIT: 900MiB
+      sidecar:
+        dashboards:
+          enabled: true
+          label: grafana_dashboard
+          labelValue: metered-inference
+          provider:
+            folder: Metered inference
+            allowUiUpdates: false
+        datasources:
+          # The Platform writes one grafana_datasource ConfigMap per tenant cluster.
+          enabled: {{ if $platform }}true{{ else }}false{{ end }}
+          label: grafana_datasource
+      {{- if not $platform }}
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+            - name: Metered inference Prometheus
+              uid: metered-inference-prometheus
+              type: prometheus
+              access: proxy
+              # The Prometheus App always installs into inference-observability.
+              url: http://metered-inference-prometheus.inference-observability.svc.cluster.local
+              isDefault: true
+              editable: false
+      {{- else }}
+      envValueFrom:
+        GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+          secretKeyRef:
+            name: metered-inference-grafana-oidc
+            key: clientSecret
+      extraSecretMounts:
+        - name: loft-server-cert
+          secretName: loft-server-cert
+          mountPath: /etc/loft-server-cert
+          readOnly: true
+          items:
+            - key: ca.crt
+              path: ca.crt
+      {{- end }}
+      grafana.ini:
+        analytics:
+          check_for_updates: false
+          reporting_enabled: false
+        auth.anonymous:
+          enabled: false
+        {{- if $platform }}
+        server:
+          root_url: {{ printf "https://%s/grafana/" $host | quote }}
+          serve_from_sub_path: true
+        security:
+          # The Platform UI embeds dashboards in an iframe on its own origin.
+          allow_embedding: true
+          cookie_samesite: lax
+          cookie_secure: true
+          csrf_trusted_origins: {{ $host | quote }}
+        auth:
+          disable_login_form: true
+        auth.generic_oauth:
+          enabled: true
+          name: vCluster Platform
+          allow_sign_up: true
+          auto_login: true
+          client_id: metered-inference-grafana
+          client_secret: $__env{GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}
+          scopes: openid profile email groups
+          use_pkce: true
+          # The browser is sent to the external host; the token and userinfo calls stay in the
+          # cluster and trust the Platform's own CA.
+          auth_url: {{ printf "https://%s/grant" $host | quote }}
+          token_url: {{ printf "https://loft.%s.svc.cluster.local/oidc/token" $ns | quote }}
+          api_url: {{ printf "https://loft.%s.svc.cluster.local/oidc/userinfo" $ns | quote }}
+          tls_client_ca: /etc/loft-server-cert/ca.crt
+          email_attribute_path: email || join('@', [sub, 'vcluster.local'])
+          groups_attribute_path: groups
+          allow_assign_grafana_admin: true
+          {{- if .Values.grafanaAdminGroup }}
+          role_attribute_path: {{ printf "contains(groups[*], '%s') && 'Admin' || 'Viewer'" .Values.grafanaAdminGroup | quote }}
+          {{- end }}
+        {{- end }}
+  parameters:
+    - variable: platformIntegration
+      label: Serve through vCluster Platform
+      type: boolean
+      defaultValue: "false"
+    - variable: platformHost
+      label: Platform host
+      type: string
+    - variable: platformNamespace
+      label: Platform namespace
+      type: string
+      defaultValue: vcluster-platform
+    - variable: grafanaAdminGroup
+      label: Grafana admin group
+      description: Platform group whose members get the Grafana Admin role. Only used when served through vCluster Platform.
+      type: string

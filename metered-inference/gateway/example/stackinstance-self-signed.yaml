@@ -1,0 +1,27 @@
+# The quickest start: no DNS zone and no public certificates.
+#
+# Tenant endpoints are published under <gateway-address>.sslip.io, which resolves to the Gateway's
+# load balancer IPv4 address through the public sslip.io service, with certificates from a private
+# CA. Clients must trust that CA (the README shows how to fetch it) or skip verification. Each
+# tenant sees its own token usage in its tenant cluster's Observability tab.
+#
+# Apply it in a project namespace, for example `-n p-default`. Install it once per control plane cluster.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: metered-inference-gateway
+spec:
+  displayName: Metered inference gateway
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: metered-inference-gateway
+  parameters:
+    domain: ""
+    tlsIssuer: self-signed
+    dnsProvider: none
+    clusterName: loft-cluster
+  prunePolicy: Prune

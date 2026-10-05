@@ -1,0 +1,379 @@
+# Prepares a control plane cluster to serve metered inference endpoints for its tenant clusters.
+# Install it once per control plane cluster, before the metered-inference-platform Stack, which
+# reads the endpoint contract this Stack publishes.
+#
+# One agentgateway Gateway fronts every tenant endpoint and meters the tokens in each response.
+# cert-manager issues each tenant's certificate, external-dns publishes one wildcard record for
+# the Gateway, and Prometheus scrapes the Gateway so Grafana can report token usage and a
+# showback charge per tenant cluster.
+#
+# Apply every App in apps/ before this template. See metered-inference/README.md for the
+# prerequisites, parameters, and the tenant side.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: metered-inference-gateway
+spec:
+  displayName: Metered inference gateway
+  icon: https://cdn.jsdelivr.net/gh/selfhst/icons/svg/agentgateway.svg
+  description: >-
+    Installs a shared, token-metering agentgateway Gateway with per-tenant TLS and DNS, plus
+    Prometheus and Grafana showback, on a control plane cluster. Tenant clusters created with the
+    metered-inference-kubeai Stack publish their inference endpoints through it.
+  parameters:
+    # Endpoints.
+    - variable: domain
+      label: Inference domain
+      description: >-
+        DNS suffix for tenant endpoints: each tenant cluster is published at
+        <tenant-cluster>.<project>.<domain>. Leave empty to use <gateway-address>.sslip.io, which
+        needs a Gateway address that is an IPv4 address.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$'
+    - variable: serviceType
+      label: Gateway Service type
+      description: How the shared Gateway is exposed. LoadBalancer unless something else fronts it.
+      type: string
+      options:
+        - LoadBalancer
+        - NodePort
+        - ClusterIP
+      defaultValue: LoadBalancer
+    - variable: serviceAnnotations
+      label: Gateway Service annotations
+      description: Extra annotations for the Gateway's Service as YAML, for example cloud load balancer settings.
+      type: multiline
+      defaultValue: ""
+
+    # TLS.
+    - variable: tlsIssuer
+      label: TLS issuer
+      description: >-
+        Issuer for tenant endpoint certificates. self-signed creates a private CA. letsencrypt and
+        letsencrypt-staging solve HTTP-01 through the Gateway, which works with any DNS provider.
+        none serves plain HTTP.
+      type: string
+      options:
+        - self-signed
+        - letsencrypt
+        - letsencrypt-staging
+        - none
+      defaultValue: self-signed
+    - variable: installCertManager
+      label: Install cert-manager
+      description: Set false when the cluster already runs cert-manager 1.15 or later with the Gateway API integration enabled.
+      type: boolean
+      defaultValue: "true"
+    - variable: certManagerNamespace
+      label: cert-manager namespace
+      description: cert-manager's cluster resource namespace, where the self-signed CA is stored.
+      type: string
+      defaultValue: cert-manager
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+    # DNS.
+    - variable: dnsProvider
+      label: DNS provider
+      description: >-
+        Where external-dns publishes the *.<domain> record for the Gateway. none means you create
+        that record yourself, or use the sslip.io fallback with an empty domain.
+      type: string
+      options:
+        - none
+        - route53
+        - gandi
+      defaultValue: none
+    - variable: dnsCredentialsSecret
+      label: DNS credentials Secret
+      description: >-
+        Secret in the external-dns namespace with the provider credentials: AWS_ACCESS_KEY_ID and
+        AWS_SECRET_ACCESS_KEY for route53, GANDI_PAT for gandi.
+      type: string
+      defaultValue: external-dns-credentials
+      validation: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+    - variable: awsRegion
+      label: AWS region
+      description: Region for the Route 53 API client.
+      type: string
+      defaultValue: us-east-1
+    - variable: awsRoleArn
+      label: AWS IAM role ARN
+      description: Optional IRSA role for external-dns on EKS, instead of the credentials Secret.
+      type: string
+      defaultValue: ""
+    - variable: verifyDNS
+      label: Wait for the DNS record
+      description: >-
+        With a DNS provider, keep the gateway task pending until a name under the domain resolves
+        to the Gateway, so a DNS mistake fails the Stack instead of every tenant endpoint later.
+      type: boolean
+      defaultValue: "true"
+    - variable: dnsCheckResolver
+      label: DNS check resolver
+      description: >-
+        IPv4 address of the resolver the DNS check asks, for example 1.1.1.1. Leave empty to use
+        cluster DNS; set it when cluster DNS cannot see the public zone.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[0-9]+(\.[0-9]+){3}$'
+
+    # Metering.
+    - variable: clusterName
+      label: Control plane cluster name
+      description: This cluster's name in vCluster Platform.
+      type: string
+      defaultValue: loft-cluster
+      validation: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: metricsRetention
+      label: Metrics retention
+      description: How long token metrics are kept, which bounds how far back showback can look.
+      type: string
+      defaultValue: 30d
+      validation: '^[0-9]+(h|d|w|y)$'
+    - variable: metricsStorageSize
+      label: Metrics storage size
+      type: string
+      defaultValue: 20Gi
+    - variable: metricsStorageClass
+      label: Metrics storage class
+      description: Leave empty for the default StorageClass.
+      type: string
+      defaultValue: ""
+    - variable: inputPricePerMillion
+      label: Input price per million tokens
+      description: Default showback rate for prompt tokens, in US dollars.
+      type: string
+      defaultValue: "0.20"
+      validation: '^[0-9]+(\.[0-9]+)?$'
+    - variable: outputPricePerMillion
+      label: Output price per million tokens
+      description: Default showback rate for generated tokens, in US dollars.
+      type: string
+      defaultValue: "0.60"
+      validation: '^[0-9]+(\.[0-9]+)?$'
+
+    # vCluster Platform integration.
+    - variable: platformIntegration
+      label: Show usage to tenants in vCluster Platform
+      description: >-
+        Register Prometheus and Grafana as the Platform's observability connector, so each tenant
+        cluster's Observability tab shows its own token usage. Set false if the Platform already
+        has a fleet observability connector, or to keep Grafana standalone and admin-only.
+      type: boolean
+      defaultValue: "true"
+    - variable: platformHost
+      label: Platform host
+      description: >-
+        Externally reachable vCluster Platform host, without the scheme. Leave empty to use the
+        host the Platform reports for itself.
+      type: string
+      defaultValue: ""
+    - variable: platformNamespace
+      label: Platform namespace
+      description: Namespace vCluster Platform runs in. Leave empty to find it from the Platform's API service.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    - variable: grafanaAdminGroup
+      label: Grafana admin group
+      description: Platform group whose members get the Grafana Admin role. Everyone else is a Viewer.
+      type: string
+      defaultValue: ""
+
+    # Cluster prerequisites.
+    - variable: installGatewayAPI
+      label: Install Gateway API CRDs
+      description: Set false when something else manages the Gateway API CRDs. They must be 1.5 or later, standard channel.
+      type: boolean
+      defaultValue: "true"
+    - variable: gatewayAPIVersion
+      label: Gateway API version
+      type: string
+      defaultValue: 1.6.2
+      validation: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      description: >-
+        If the vCluster Platform image needs a pull Secret, its name. It must exist in the
+        inference-gateway and inference-observability namespaces. Leave empty otherwise.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+
+  tasks:
+    - name: gatewayapi
+      timeout: 10m
+      app:
+        templateRef:
+          name: metered-inference-gateway-api-crds
+        parameters:
+          mode: '{{ if .Values.installGatewayAPI }}install{{ else }}verify{{ end }}'
+          version: "{{ .Values.gatewayAPIVersion }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+
+    # cert-manager starts its Gateway API integration only if the CRDs already exist.
+    - name: certmanager
+      dependsOn: [gatewayapi]
+      timeout: 12m
+      app:
+        templateRef:
+          name: 'metered-inference-cert-manager{{ if or (not .Values.installCertManager) (eq .Values.tlsIssuer "none") }}-skip{{ end }}'
+
+    - name: externaldns
+      timeout: 8m
+      app:
+        templateRef:
+          name: 'metered-inference-external-dns{{ if eq .Values.dnsProvider "none" }}-skip{{ end }}'
+        parameters:
+          provider: "{{ .Values.dnsProvider }}"
+          domain: "{{ .Values.domain }}"
+          credentialsSecret: "{{ .Values.dnsCredentialsSecret }}"
+          awsRegion: "{{ .Values.awsRegion }}"
+          awsRoleArn: "{{ .Values.awsRoleArn }}"
+          txtOwnerId: "metered-inference-{{ .Values.clusterName }}"
+
+    - name: agentgatewaycrds
+      dependsOn: [gatewayapi]
+      timeout: 8m
+      app:
+        templateRef:
+          name: metered-inference-agentgateway-crds
+
+    - name: agentgateway
+      dependsOn: [agentgatewaycrds]
+      timeout: 10m
+      app:
+        templateRef:
+          name: metered-inference-agentgateway
+
+    - name: gateway
+      dependsOn: [agentgateway, certmanager]
+      timeout: 30m
+      app:
+        templateRef:
+          name: metered-inference-shared-gateway
+        parameters:
+          domain: "{{ .Values.domain }}"
+          tlsIssuer: "{{ .Values.tlsIssuer }}"
+          certManagerNamespace: "{{ .Values.certManagerNamespace }}"
+          serviceType: "{{ .Values.serviceType }}"
+          serviceAnnotations: "{{ .Values.serviceAnnotations }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+          # Only when external-dns manages the record: with none, the record is created from the
+          # address output this task publishes.
+          verifyDNS: '{{ and .Values.verifyDNS (ne .Values.dnsProvider "none") }}'
+          dnsCheckResolver: "{{ .Values.dnsCheckResolver }}"
+      outputs:
+        - name: address
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.address}"
+        - name: domain
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.domain}"
+        - name: scheme
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.scheme}"
+
+    - name: prometheus
+      timeout: 12m
+      app:
+        templateRef:
+          name: metered-inference-prometheus
+        parameters:
+          clusterName: "{{ .Values.clusterName }}"
+          retention: "{{ .Values.metricsRetention }}"
+          storageSize: "{{ .Values.metricsStorageSize }}"
+          storageClass: "{{ .Values.metricsStorageClass }}"
+
+    # The Platform's host and namespace, as given or as the Platform reports them.
+    - name: platform
+      timeout: 8m
+      app:
+        templateRef:
+          name: metered-inference-platform-discovery
+        parameters:
+          platformIntegration: "{{ .Values.platformIntegration }}"
+          platformHost: "{{ .Values.platformHost }}"
+          platformNamespace: "{{ .Values.platformNamespace }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+      outputs:
+        - name: host
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-observability
+            name: metered-inference-platform-discovery
+            jsonPath: "{.data.host}"
+        - name: namespace
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-observability
+            name: metered-inference-platform-discovery
+            jsonPath: "{.data.namespace}"
+
+    - name: connector
+      dependsOn: [prometheus, platform]
+      timeout: 8m
+      app:
+        templateRef:
+          name: 'metered-inference-platform-connector{{ if not .Values.platformIntegration }}-skip{{ end }}'
+        parameters:
+          platformHost: "{{ .Outputs.platform.host }}"
+          platformNamespace: "{{ .Outputs.platform.namespace }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+
+    # With the Platform integration, Grafana reads the OIDC client Secret the connector task creates.
+    - name: grafana
+      dependsOn: [connector, platform]
+      timeout: 10m
+      app:
+        templateRef:
+          name: metered-inference-grafana
+        parameters:
+          platformIntegration: "{{ .Values.platformIntegration }}"
+          platformHost: "{{ .Outputs.platform.host }}"
+          platformNamespace: "{{ .Outputs.platform.namespace }}"
+          grafanaAdminGroup: "{{ .Values.grafanaAdminGroup }}"
+
+    - name: dashboards
+      dependsOn: [grafana, platform]
+      timeout: 5m
+      app:
+        templateRef:
+          name: metered-inference-dashboards
+        parameters:
+          platformIntegration: "{{ .Values.platformIntegration }}"
+          platformNamespace: "{{ .Outputs.platform.namespace }}"
+          inputPricePerMillion: "{{ .Values.inputPricePerMillion }}"
+          outputPricePerMillion: "{{ .Values.outputPricePerMillion }}"
+
+  publishedOutputs:
+    # Point the wildcard DNS record for the inference domain here when dnsProvider is none.
+    - name: gatewayAddress
+      fromTask:
+        task: gateway
+        output: address
+    # The platform Stack reads these from the contract ConfigMap and builds the tenant cluster
+    # template from them.
+    - name: endpointDomain
+      fromTask:
+        task: gateway
+        output: domain
+    - name: endpointScheme
+      fromTask:
+        task: gateway
+        output: scheme

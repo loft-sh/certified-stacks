@@ -19,6 +19,7 @@ The native catalog contains these integrations:
 | --- | --- | --- |
 | [NVIDIA Run:ai](run-ai/) | Dedicated control plane and central control plane | vCluster, NVIDIA GPU components, and NVIDIA Run:ai |
 | [NVIDIA Dynamo](nvidia-dynamo/) | One runtime per tenant cluster or control plane cluster | NVIDIA Dynamo operator, NATS, and etcd |
+| [Metered inference](metered-inference/) | A shared, token-metering gateway per control plane cluster, and one model per KubeVirt tenant cluster | agentgateway, cert-manager, external-dns, Prometheus, Grafana, KubeVirt, and KubeAI |
 
 See the [NVIDIA Run:ai integration guide](https://www.vcluster.com/docs/platform/next/integrations/certified-stacks/runai) to choose a deployment model and understand its prerequisites.
 

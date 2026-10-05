@@ -1,0 +1,612 @@
+# Publishes one tenant cluster's inference endpoints through the shared inference Gateway.
+#
+# Deploy it with a VirtualClusterTemplate's `spaceTemplate.apps`, so it runs in the tenant
+# cluster's namespace on the control plane cluster: see ../../source/virtualclustertemplate.yaml.
+# For an existing tenant cluster, create an AppInstance into that namespace instead and pass
+# tenantCluster and project: see ../example/appinstance-endpoint.yaml. It needs the
+# metered-inference-gateway Stack on the same control plane cluster.
+#
+# The tenant cluster's nodes are KubeVirt VMs, and KubeAI listens on fixed node ports inside them.
+# The control plane cluster reaches each VM at its pod network address, so this App:
+#
+#   - creates selectorless Services `inference-api` and `inference-chat`, and a CronJob that fills
+#     their EndpointSlices with the addresses of the tenant cluster's Ready VMs. It follows each
+#     NodeClaim of the tenant cluster to its VirtualMachineInstance, through the NodeClaim's
+#     `kubevirt.vcluster.com/vm-ref` annotation. With no Ready VM the slices are
+#     emptied, so the Gateway answers 503 rather than sending traffic to an address that may since
+#     belong to another tenant's VM.
+#   - creates an AgentgatewayBackend that treats the API as an OpenAI provider, so the Gateway
+#     counts the tokens in every request and response.
+#   - with a cluster issuer, attaches this tenant's own HTTPS listeners to the shared Gateway with a
+#     ListenerSet, and issues their certificate into this namespace. Without one, routes attach to
+#     the Gateway's plain HTTP listener.
+#   - with an API key, requires `Authorization: Bearer <key>` on the API route.
+#   - names the metered route `api.<project>.<tenant-cluster>`. The gateway Stack's Prometheus
+#     rules read tenant identity from that name, so do not rename it.
+#
+# HTTPRoutes are applied by the CronJob, not by Helm, and only when their rendered spec changes:
+# vCluster Platform sleep mode rewrites the rules of HTTPRoutes in tenant namespaces, and a
+# re-apply on every run would undo it. The CronJob makes itself the owner of every object it
+# creates, so removing this App garbage-collects them.
+#
+# Assumes the tenant cluster runs on the same cluster as vCluster Platform (NodeClaims live in the
+# project namespace there) and as its KubeVirt VMs.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-endpoint
+  labels:
+    inference.vcluster.com/stack: kubeai
+spec:
+  displayName: '[Metered Inference KubeAI] Tenant endpoint'
+  description: Routes one tenant cluster's inference API and chat UI through the shared, token-metering inference Gateway.
+  access:
+    - users:
+        - '*'
+      verbs:
+        - get
+  config:
+    manifests: |-
+      {{- /* From a spaceTemplate the Platform supplies the tenant identity; a hand-made AppInstance passes it. */}}
+      {{- $loft := .Values.loft | default dict }}
+      {{- $cluster := .Values.tenantCluster | default $loft.virtualClusterName | required "set tenantCluster, or deploy from a VirtualClusterTemplate spaceTemplate" }}
+      {{- $project := .Values.project | default $loft.project | required "set project, or deploy from a VirtualClusterTemplate spaceTemplate" }}
+      {{- $projectNamespace := .Values.projectNamespace | default $loft.projectNamespace | default (printf "p-%s" $project) }}
+      {{- $ns := .Release.Namespace }}
+      {{- $api := required "apiHostname is required" .Values.apiHostname }}
+      {{- $chat := .Values.chatHostname | default "" }}
+      {{- /* App parameter defaults do not reach an AppInstance, so an omitted issuer is the gateway's. */}}
+      {{- $issuer := ternary (.Values.clusterIssuer | default "" | toString) "metered-inference" (hasKey .Values "clusterIssuer") }}
+      {{- $gateway := .Values.gatewayName | default "inference" }}
+      {{- $gatewayNamespace := .Values.gatewayNamespace | default "inference-gateway" }}
+      {{- $vmNamespace := .Values.vmNamespace | default "kubevirt" }}
+      {{- $apiPort := .Values.apiNodePort | default "30080" | toString }}
+      {{- $chatPort := .Values.chatNodePort | default "30081" | toString }}
+      {{- $routeSuffix := printf "%s.%s" $project $cluster }}
+      {{- $rbacName := printf "metered-inference-endpoint-%s" $ns }}
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: inference-api
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        type: ClusterIP
+        ports:
+          - name: http
+            port: 80
+            targetPort: {{ $apiPort }}
+            protocol: TCP
+      ---
+      {{- if $chat }}
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: inference-chat
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        type: ClusterIP
+        ports:
+          - name: http
+            port: 80
+            targetPort: {{ $chatPort }}
+            protocol: TCP
+      ---
+      {{- end }}
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      metadata:
+        name: inference-api
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        ai:
+          provider:
+            openai: {}
+            host: inference-api.{{ $ns }}.svc.cluster.local
+            port: 80
+            # KubeAI serves the OpenAI API under /openai/v1. The Gateway swaps a request's leading
+            # /v1 for this prefix.
+            pathPrefix: /openai/v1
+        policies:
+          ai:
+            routes:
+              /v1/chat/completions: Completions
+              /v1/embeddings: Embeddings
+              /v1/models: Passthrough
+              "*": Detect
+      ---
+      {{- if .Values.apiKey }}
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: inference-api-keys
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      type: Opaque
+      stringData:
+        tenant: {{ .Values.apiKey | quote }}
+      ---
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayPolicy
+      metadata:
+        name: inference-api-key
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: api.{{ $routeSuffix }}
+        traffic:
+          apiKeyAuthentication:
+            mode: Strict
+            secretRef:
+              name: inference-api-keys
+      ---
+      {{- end }}
+      {{- if $issuer }}
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        secretName: inference-endpoint-tls
+        dnsNames:
+          - {{ $api | quote }}
+          {{- if $chat }}
+          - {{ $chat | quote }}
+          {{- end }}
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Always
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: {{ $issuer }}
+      ---
+      # This tenant's own HTTPS listeners on the shared Gateway, with its own certificate.
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: ListenerSet
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        parentRef:
+          group: gateway.networking.k8s.io
+          kind: Gateway
+          name: {{ $gateway }}
+          namespace: {{ $gatewayNamespace }}
+        listeners:
+          - name: api
+            hostname: {{ $api | quote }}
+            port: 443
+            protocol: HTTPS
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - kind: Secret
+                  name: inference-endpoint-tls
+          {{- if $chat }}
+          - name: chat
+            hostname: {{ $chat | quote }}
+            port: 443
+            protocol: HTTPS
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - kind: Secret
+                  name: inference-endpoint-tls
+          {{- end }}
+      ---
+      {{- end }}
+      # Rendered here so Helm owns the definition; the CronJob applies it (see the header).
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: inference-endpoint-routes
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      data:
+        routes.yaml: |
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: api.{{ $routeSuffix }}
+            namespace: {{ $ns }}
+            labels:
+              app.kubernetes.io/name: inference-endpoint
+          spec:
+            parentRefs:
+            {{- if $issuer }}
+              - group: gateway.networking.k8s.io
+                kind: ListenerSet
+                name: inference-endpoint
+                sectionName: api
+            {{- else }}
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: {{ $gateway }}
+                namespace: {{ $gatewayNamespace }}
+                sectionName: http
+            {{- end }}
+            hostnames:
+              - {{ $api | quote }}
+            rules:
+              # OpenAI's own base path, which the Gateway maps onto KubeAI's /openai/v1.
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /v1
+                backendRefs:
+                  - group: agentgateway.dev
+                    kind: AgentgatewayBackend
+                    name: inference-api
+              # KubeAI's native base path, for clients configured against KubeAI directly.
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /openai/v1
+                filters:
+                  - type: URLRewrite
+                    urlRewrite:
+                      path:
+                        type: ReplacePrefixMatch
+                        replacePrefixMatch: /v1
+                backendRefs:
+                  - group: agentgateway.dev
+                    kind: AgentgatewayBackend
+                    name: inference-api
+          {{- if $chat }}
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: chat.{{ $routeSuffix }}
+            namespace: {{ $ns }}
+            labels:
+              app.kubernetes.io/name: inference-endpoint
+          spec:
+            parentRefs:
+            {{- if $issuer }}
+              - group: gateway.networking.k8s.io
+                kind: ListenerSet
+                name: inference-endpoint
+                sectionName: chat
+            {{- else }}
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: {{ $gateway }}
+                namespace: {{ $gatewayNamespace }}
+                sectionName: http
+            {{- end }}
+            hostnames:
+              - {{ $chat | quote }}
+            rules:
+              - backendRefs:
+                  - name: inference-chat
+                    port: 80
+          {{- end }}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+      rules:
+        - apiGroups: ["discovery.k8s.io"]
+          resources: ["endpointslices"]
+          verbs: ["get", "list", "create", "update", "patch"]
+        - apiGroups: ["gateway.networking.k8s.io"]
+          resources: ["httproutes"]
+          verbs: ["get", "list", "create", "update", "patch", "delete"]
+        # VMs of node providers that place them in the tenant cluster's namespace.
+        - apiGroups: ["kubevirt.io"]
+          resources: ["virtualmachineinstances"]
+          verbs: ["get"]
+        # Its own UID, to own what it creates.
+        - apiGroups: ["batch"]
+          resources: ["cronjobs"]
+          resourceNames: ["inference-endpoint"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: inference-endpoint
+      subjects:
+        - kind: ServiceAccount
+          name: inference-endpoint
+          namespace: {{ $ns }}
+      ---
+      # NodeClaims live in the Platform project namespace. Names carry the tenant cluster's
+      # namespace because every tenant cluster in the project binds its own.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ $rbacName }}
+        namespace: {{ $projectNamespace }}
+      rules:
+        - apiGroups: ["storage.loft.sh"]
+          resources: ["nodeclaims"]
+          verbs: ["get", "list"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ $rbacName }}
+        namespace: {{ $projectNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ $rbacName }}
+      subjects:
+        - kind: ServiceAccount
+          name: inference-endpoint
+          namespace: {{ $ns }}
+      ---
+      # The KubeVirt node provider's VMs, shared by every tenant cluster it serves. Read-only. With
+      # the provider's VirtualCluster namespace strategy the VMs are in the tenant namespace instead,
+      # which the Role above covers.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: {{ $rbacName }}
+        namespace: {{ $vmNamespace }}
+      rules:
+        - apiGroups: ["kubevirt.io"]
+          resources: ["virtualmachineinstances"]
+          verbs: ["get", "list"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: {{ $rbacName }}
+        namespace: {{ $vmNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: {{ $rbacName }}
+      subjects:
+        - kind: ServiceAccount
+          name: inference-endpoint
+          namespace: {{ $ns }}
+      ---
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: inference-endpoint
+        namespace: {{ $ns }}
+        labels:
+          app.kubernetes.io/name: inference-endpoint
+      spec:
+        schedule: {{ .Values.schedule | default "* * * * *" | quote }}
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 2
+        startingDeadlineSeconds: 120
+        jobTemplate:
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 110
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                serviceAccountName: inference-endpoint
+                {{- if .Values.jobImagePullSecret }}
+                imagePullSecrets:
+                  - name: {{ .Values.jobImagePullSecret | quote }}
+                {{- end }}
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: reconcile
+                    image: {{ .Values.__image__ | quote }}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 20m
+                        memory: 64Mi
+                      limits:
+                        memory: 256Mi
+                    env:
+                      - name: HOME
+                        value: /tmp
+                      - name: KUBECACHEDIR
+                        value: /tmp/.kube-cache
+                      - name: NS
+                        value: {{ $ns | quote }}
+                      - name: CLUSTER
+                        value: {{ $cluster | quote }}
+                      - name: PROJECT_NAMESPACE
+                        value: {{ $projectNamespace | quote }}
+                      - name: VM_NAMESPACE
+                        value: {{ $vmNamespace | quote }}
+                      - name: API_PORT
+                        value: {{ $apiPort | quote }}
+                      - name: CHAT_PORT
+                        value: {{ if $chat }}{{ $chatPort | quote }}{{ else }}""{{ end }}
+                    command: ["sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        owner_uid=$(kubectl -n "$NS" get cronjob inference-endpoint -o jsonpath='{.metadata.uid}')
+                        owner=$(jq -cn --arg uid "$owner_uid" \
+                          '[{apiVersion: "batch/v1", kind: "CronJob", name: "inference-endpoint", uid: $uid}]')
+
+                        # The tenant cluster's joined nodes, and each one's VM. Read the claims
+                        # first, so an API error stops the run instead of emptying the endpoints.
+                        claims=$(kubectl -n "$PROJECT_NAMESPACE" get nodeclaims.storage.loft.sh -o json)
+                        vms=$(printf '%s' "$claims" | jq -r --arg c "$CLUSTER" --arg ns "$VM_NAMESPACE" '
+                          .items[]
+                          | select(.spec.vClusterRef == $c)
+                          | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                          | .metadata.annotations["kubevirt.vcluster.com/vm-ref"] // ($ns + "/" + .metadata.name)')
+                        addresses=""
+                        for vm in $vms; do
+                          if vmi=$(kubectl -n "${vm%%/*}" get virtualmachineinstances.kubevirt.io "${vm#*/}" -o json 2>/tmp/vmi.err); then
+                            address=$(printf '%s' "$vmi" | jq -r '
+                              select(.status.phase == "Running")
+                              | [.status.interfaces[]?.ipAddress // empty | select(test("^[0-9]+(\\.[0-9]+){3}$"))][0] // empty')
+                          else
+                            echo "cannot read VirtualMachineInstance $vm: $(cat /tmp/vmi.err)"
+                            address=""
+                          fi
+                          if [ -n "$address" ]; then
+                            addresses="$addresses $address"
+                          else
+                            echo "VM $vm has no running address yet"
+                          fi
+                        done
+                        echo "tenant cluster $CLUSTER nodes:${addresses:- none}"
+
+                        # One EndpointSlice per Service, replaced wholesale on every run.
+                        slice() {
+                          jq -n --arg name "$1" --arg ns "$NS" --argjson port "$2" --argjson owner "$owner" --arg addresses "$addresses" '{
+                            apiVersion: "discovery.k8s.io/v1", kind: "EndpointSlice",
+                            metadata: {
+                              name: $name, namespace: $ns, ownerReferences: $owner,
+                              labels: {
+                                "kubernetes.io/service-name": $name,
+                                "endpointslice.kubernetes.io/managed-by": "metered-inference-endpoint",
+                                "app.kubernetes.io/name": "inference-endpoint"
+                              }
+                            },
+                            addressType: "IPv4",
+                            ports: [{name: "http", port: $port, protocol: "TCP"}],
+                            endpoints: [$addresses | split(" ")[] | select(. != "") | {addresses: [.], conditions: {ready: true}}]
+                          }' | kubectl apply -f -
+                        }
+                        slice inference-api "$API_PORT"
+                        [ -z "$CHAT_PORT" ] || slice inference-chat "$CHAT_PORT"
+
+                        # HTTPRoutes: apply only when the rendered definition changes, so a rule
+                        # that sleep mode added survives.
+                        want=$(sha256sum /routes/routes.yaml | cut -c1-16)
+                        # kubectl prints one JSON object per document, so slurp them into one array.
+                        desired=$(kubectl create --dry-run=client -o json -f /routes/routes.yaml | jq -cs '
+                          [.[] | if .kind == "List" then .items[] else . end]')
+                        current=$(kubectl -n "$NS" get httproutes.gateway.networking.k8s.io -l app.kubernetes.io/name=inference-endpoint -o json)
+                        stale=$(jq -n --argjson d "$desired" --argjson c "$current" --arg h "$want" '
+                          ($d | map(.metadata.name)) as $names
+                          | ($c.items | map(select(.metadata.annotations["inference.vcluster.com/spec-hash"] == $h) | .metadata.name)) as $fresh
+                          | ($names - $fresh) | length')
+                        if [ "$stale" -gt 0 ]; then
+                          printf '%s' "$desired" | jq --arg h "$want" --argjson owner "$owner" '{
+                            apiVersion: "v1", kind: "List",
+                            items: map(.metadata.annotations["inference.vcluster.com/spec-hash"] = $h | .metadata.ownerReferences = $owner)
+                          }' | kubectl apply -f -
+                        else
+                          echo "HTTPRoutes are current"
+                        fi
+                        # Routes no longer rendered, for example after removing the chat hostname.
+                        for name in $(jq -rn --argjson d "$desired" --argjson c "$current" '
+                            ($d | map(.metadata.name)) as $names | $c.items[].metadata.name | select(. as $n | $names | index($n) | not)'); do
+                          kubectl -n "$NS" delete httproute.gateway.networking.k8s.io "$name" --ignore-not-found
+                        done
+                    volumeMounts:
+                      - name: routes
+                        mountPath: /routes
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+                volumes:
+                  - name: routes
+                    configMap:
+                      name: inference-endpoint-routes
+                  - name: tmp
+                    emptyDir: {}
+  parameters:
+    - variable: apiHostname
+      label: API hostname
+      description: Public hostname of the tenant cluster's inference API, under the gateway Stack's endpoint domain.
+      type: string
+      required: true
+    - variable: chatHostname
+      label: Chat UI hostname
+      description: Public hostname of the chat UI. Leave empty to publish no chat UI.
+      type: string
+    - variable: apiNodePort
+      label: API node port
+      description: Must match the metered-inference-kubeai Stack's apiNodePort.
+      type: string
+      defaultValue: "30080"
+    - variable: chatNodePort
+      label: Chat UI node port
+      description: Must match the metered-inference-kubeai Stack's chatNodePort.
+      type: string
+      defaultValue: "30081"
+    - variable: clusterIssuer
+      label: Cluster issuer
+      description: ClusterIssuer for the endpoint certificate, metered-inference from the gateway Stack. Leave empty when the gateway Stack uses tlsIssuer none.
+      type: string
+      defaultValue: metered-inference
+    - variable: apiKey
+      label: API key
+      description: Key clients must send as a Bearer token. Leave empty for an open endpoint.
+      type: password
+    - variable: gatewayName
+      label: Gateway name
+      type: string
+      defaultValue: inference
+    - variable: gatewayNamespace
+      label: Gateway namespace
+      type: string
+      defaultValue: inference-gateway
+    - variable: vmNamespace
+      label: KubeVirt VM namespace
+      description: Namespace the KubeVirt node provider creates VMs in (its clusterRef.namespace).
+      type: string
+      defaultValue: kubevirt
+    - variable: schedule
+      label: Reconcile schedule
+      type: string
+      defaultValue: '* * * * *'
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      description: Secret in the tenant cluster's namespace that pulls the vCluster Platform image. Leave empty when the image pulls anonymously.
+      type: string
+    # Only for an AppInstance created by hand. From a spaceTemplate, the Platform supplies these.
+    - variable: tenantCluster
+      label: Tenant cluster
+      description: Leave empty when deployed from a VirtualClusterTemplate spaceTemplate.
+      type: string
+    - variable: project
+      label: Project
+      description: Leave empty when deployed from a VirtualClusterTemplate spaceTemplate.
+      type: string
+    - variable: projectNamespace
+      label: Project namespace
+      description: Defaults to p-<project>.
+      type: string
