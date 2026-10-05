@@ -1,3 +1,6 @@
+> [!Warning]
+> This repo is now archived. To access our Stacks Catalog of Community and Certified stacks, please navigate to [`loft.sh/vcluster-stacks`](https://github.com/loft-sh/vcluster-stacks) for the new canonical repo.
+
 # Certified Stacks
 
 <p align="center">
