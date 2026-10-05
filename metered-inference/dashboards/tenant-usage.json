@@ -1,0 +1,1247 @@
+{
+  "uid": "vcluster-cluster-observability",
+  "title": "Metered inference / Tenant cluster usage",
+  "description": "Tokens this tenant cluster served through the shared inference Gateway, priced at an editable rate card.",
+  "tags": [
+    "metered-inference",
+    "showback",
+    "tenant"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "auto",
+  "schemaVersion": 42,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 2,
+        "refresh": 1,
+        "options": []
+      },
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_count, gen_ai_request_model)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_count, gen_ai_request_model)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "regex": "",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "input_price",
+        "label": "Input $ / 1M tokens",
+        "type": "textbox",
+        "query": "__INPUT_PRICE__",
+        "current": {
+          "text": "__INPUT_PRICE__",
+          "value": "__INPUT_PRICE__"
+        },
+        "hide": 0
+      },
+      {
+        "name": "output_price",
+        "label": "Output $ / 1M tokens",
+        "type": "textbox",
+        "query": "__OUTPUT_PRICE__",
+        "current": {
+          "text": "__OUTPUT_PRICE__",
+          "value": "__OUTPUT_PRICE__"
+        },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Usage",
+      "id": 1,
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Tokens",
+      "description": "Input plus output tokens this tenant cluster served in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=~\"input|output\"}[$__range]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "id": 2,
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Input tokens",
+      "description": "Prompt tokens in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#48B5FF"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#48B5FF",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__range]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "id": 3,
+      "gridPos": {
+        "x": 5,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Output tokens",
+      "description": "Generated tokens in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF6600"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#FF6600",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__range]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "id": 4,
+      "gridPos": {
+        "x": 10,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Showback charge",
+      "description": "Tokens in the selected range at the rate card above.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF6600"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#FF6600",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__range])) or vector(0)) * ${input_price} / 1e6 + (sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__range])) or vector(0)) * ${output_price} / 1e6",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "id": 5,
+      "gridPos": {
+        "x": 15,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Requests",
+      "description": "Model requests in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_count{gen_ai_request_model=~\"${model:regex}\"}[$__range]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "id": 6,
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Token throughput by model",
+      "description": "Input plus output tokens per second.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=~\"input|output\"}[$__rate_interval]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{gen_ai_request_model}}"
+        }
+      ],
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 16,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Showback charge by token type",
+      "description": "Charge for the selected range at the rate card above.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF6600"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#FF6600",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "valueMode": "text",
+        "namePlacement": "top",
+        "sizing": "auto",
+        "minVizHeight": 16,
+        "maxVizHeight": 28,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__range])) * ${input_price} / 1e6",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "legendFormat": "Input"
+        },
+        {
+          "expr": "sum(increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__range])) * ${output_price} / 1e6",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "legendFormat": "Output"
+        }
+      ],
+      "id": 8,
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Showback statement",
+      "description": "One line per model for the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Input tokens"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#48B5FF"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Output tokens"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF6600"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Charge"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": [
+            "Input tokens",
+            "Output tokens",
+            "Total tokens",
+            "Requests",
+            "Charge"
+          ]
+        },
+        "sortBy": [
+          {
+            "displayName": "Charge",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "alias": "Total tokens",
+            "replaceFields": false,
+            "binary": {
+              "left": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Value #A"
+                }
+              },
+              "operator": "+",
+              "right": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Value #B"
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "gen_ai_request_model": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Total tokens": 3,
+              "Value #C": 4,
+              "Value #D": 5
+            },
+            "renameByName": {
+              "gen_ai_request_model": "Model",
+              "Value #A": "Input tokens",
+              "Value #B": "Output tokens",
+              "Value #C": "Requests",
+              "Value #D": "Charge"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "sum by (gen_ai_request_model) (increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__range]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (gen_ai_request_model) (increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__range]))",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (gen_ai_request_model) (increase(vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_count{gen_ai_request_model=~\"${model:regex}\"}[$__range])) and sum by (gen_ai_request_model) (increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\"}[$__range]))",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (gen_ai_request_model) (increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__range]) * ${input_price} / 1e6 or increase(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__range]) * ${output_price} / 1e6)",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Traffic",
+      "id": 10,
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Input and output tokens",
+      "description": "Tokens per second.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Input"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#48B5FF"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Output"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF6600"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"input\"}[$__rate_interval]))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "Input"
+        },
+        {
+          "expr": "sum(rate(vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum{gen_ai_request_model=~\"${model:regex}\", gen_ai_token_type=\"output\"}[$__rate_interval]))",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "Output"
+        }
+      ],
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by model",
+      "description": "Model requests per minute.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_count{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])) * 60",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{gen_ai_request_model}}"
+        }
+      ],
+      "id": 12,
+      "gridPos": {
+        "x": 8,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Responses by status",
+      "description": "Responses per minute from the inference API and chat UI, by HTTP status.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(vcluster_platform_tenant:agentgateway_requests_total[$__rate_interval])) * 60",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "id": 13,
+      "gridPos": {
+        "x": 16,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Serving performance",
+      "id": 14,
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to first token",
+      "description": "How long a streamed response takes to start.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_time_to_first_token_bucket{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "p50 {{gen_ai_request_model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_time_to_first_token_bucket{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])))",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "p95 {{gen_ai_request_model}}"
+        }
+      ],
+      "id": 15,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Generation speed",
+      "description": "Median output tokens per second while a response is streaming.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "1 / histogram_quantile(0.5, sum by (le, gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_time_per_output_token_bucket{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{gen_ai_request_model}}"
+        }
+      ],
+      "id": 16,
+      "gridPos": {
+        "x": 8,
+        "y": 30,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request duration",
+      "description": "End-to-end model request latency.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_bucket{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])))",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "p50 {{gen_ai_request_model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_bucket{gen_ai_request_model=~\"${model:regex}\"}[$__rate_interval])))",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "instant": false,
+          "range": true,
+          "legendFormat": "p95 {{gen_ai_request_model}}"
+        }
+      ],
+      "id": 17,
+      "gridPos": {
+        "x": 16,
+        "y": 30,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    }
+  ]
+}

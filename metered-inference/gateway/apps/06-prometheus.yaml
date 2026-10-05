@@ -1,0 +1,255 @@
+# Step 6: Prometheus, the token metering store.
+#
+# A Prometheus server scrapes the agentgateway proxies directly through Kubernetes pod discovery.
+# Recording rules then turn the shared Gateway's per-route metrics into per-tenant series:
+#
+#   Every metered tenant route is named `api.<project>.<tenant-cluster>` (see the
+#   metered-inference-endpoint App), so agentgateway's `route` label is
+#   `<namespace>/api.<project>.<tenant-cluster>`. The rules copy the project and tenant cluster into
+#   the descriptive `tenant_project` and `tenant_cluster` labels, which dashboards filter on, and
+#   into the scope labels `vcluster_platform_project` and `vcluster_platform_instance`. They move
+#   the control plane cluster name into `vcluster_platform_hosted_on` and clear
+#   `vcluster_platform_cluster`. The results, named `vcluster_platform_tenant:<metric>`, carry
+#   exactly the tenant scope that the vCluster Platform query proxy authorizes on, so a tenant can
+#   read its own usage and nobody else's once this Prometheus backs the Platform observability
+#   connector (step 7). The query proxy rejects regular expression matchers on scope labels, so
+#   dashboards never filter on them directly.
+#
+# Only admin-created HTTPRoutes in tenant cluster namespaces reach the shared Gateway, and tenants
+# cannot create objects in the control plane cluster, so the `route` label is trustworthy.
+#
+# The OTLP receiver is on, with the same translation settings as the Platform's bundled
+# Fleet Observability backend, so this Prometheus can also receive Fleet Observability metrics.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-prometheus
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 6] Prometheus'
+  description: Scrapes the shared inference Gateway and records per-tenant token metrics.
+  defaultNamespace: inference-observability
+  wait: true
+  timeout: 10m
+  config:
+    chart:
+      name: prometheus
+      repoURL: oci://ghcr.io/prometheus-community/charts
+      version: 29.35.0
+    values: |-
+      server:
+        fullnameOverride: metered-inference-prometheus
+        retention: {{ .Values.retention | default "30d" | quote }}
+        {{- if .Values.retentionSize }}
+        retentionSize: {{ .Values.retentionSize | quote }}
+        {{- end }}
+        persistentVolume:
+          enabled: true
+          size: {{ .Values.storageSize | default "20Gi" | quote }}
+          {{- if .Values.storageClass }}
+          storageClass: {{ .Values.storageClass | quote }}
+          {{- end }}
+        service:
+          servicePort: 80
+        global:
+          scrape_interval: 15s
+          scrape_timeout: 10s
+          evaluation_interval: 30s
+        extraFlags:
+          - web.enable-lifecycle
+          - web.enable-otlp-receiver
+        tsdb:
+          # Absorbs OTLP batching delays without out-of-bounds rejections.
+          out_of_order_time_window: 30m
+        otlp:
+          promote_resource_attributes:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.daemonset.name
+            - k8s.statefulset.name
+            - k8s.container.name
+            - service.name
+            - service.namespace
+          translation_strategy: UnderscoreEscapingWithSuffixes
+          keep_identifying_resource_attributes: true
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+
+      alertmanager:
+        enabled: false
+      kube-state-metrics:
+        enabled: false
+      prometheus-node-exporter:
+        enabled: false
+      prometheus-pushgateway:
+        enabled: false
+
+      scrapeConfigs:
+        # The chart's cluster-wide defaults scrape everything; this server meters the Gateway only.
+        kubernetes-api-servers:
+          enabled: false
+        kubernetes-nodes:
+          enabled: false
+        kubernetes-nodes-cadvisor:
+          enabled: false
+        kubernetes-service-endpoints:
+          enabled: false
+        kubernetes-service-endpoints-slow:
+          enabled: false
+        kubernetes-services:
+          enabled: false
+        kubernetes-pods:
+          enabled: false
+        kubernetes-pods-slow:
+          enabled: false
+        prometheus-pushgateway:
+          enabled: false
+        agentgateway-proxy:
+          job_name: agentgateway-proxy
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            # Every proxy agentgateway deploys for a Gateway of its class.
+            - source_labels: [__meta_kubernetes_pod_label_gateway_networking_k8s_io_gateway_class_name]
+              action: keep
+              regex: agentgateway
+            - source_labels: [__meta_kubernetes_pod_container_port_name]
+              action: keep
+              regex: metrics
+            - source_labels: [__meta_kubernetes_pod_phase]
+              action: keep
+              regex: Running
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - source_labels: [__meta_kubernetes_pod_node_name]
+              target_label: node
+            - target_label: vcluster_platform_cluster
+              replacement: {{ .Values.clusterName | default "loft-cluster" | quote }}
+        agentgateway-controller:
+          job_name: agentgateway-controller
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names:
+                  - agentgateway-system
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+              action: keep
+              regex: agentgateway
+            - source_labels: [__meta_kubernetes_pod_container_port_name]
+              action: keep
+              regex: metrics
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - target_label: vcluster_platform_cluster
+              replacement: {{ .Values.clusterName | default "loft-cluster" | quote }}
+
+      serverFiles:
+        recording_rules.yml:
+          groups:
+            - name: metered-inference.tenant-scope
+              rules:
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_sum
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_client_token_usage_sum{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_client_token_usage_count
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_client_token_usage_count{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_count
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_server_request_duration_count{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_server_request_duration_bucket
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_server_request_duration_bucket{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_server_time_to_first_token_bucket
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_server_time_to_first_token_bucket{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_gen_ai_server_time_per_output_token_bucket
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_gen_ai_server_time_per_output_token_bucket{route=~`[^/]+/api\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/api\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/api\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+                - record: vcluster_platform_tenant:agentgateway_requests_total
+                  expr: |-
+                    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+                      agentgateway_requests_total{route=~`[^/]+/(api|chat)\.[^.]+\.[^.]+`},
+                      "tenant_project", "$1", "route", `[^/]+/(?:api|chat)\.([^.]+)\.[^.]+`),
+                      "tenant_cluster", "$1", "route", `[^/]+/(?:api|chat)\.[^.]+\.([^.]+)`),
+                      "vcluster_platform_project", "$1", "tenant_project", "(.+)"),
+                      "vcluster_platform_instance", "$1", "tenant_cluster", "(.+)"),
+                      "vcluster_platform_hosted_on", "$1", "vcluster_platform_cluster", "(.+)"),
+                      "vcluster_platform_cluster", "", "", "")
+  parameters:
+    - variable: clusterName
+      label: Control plane cluster name
+      description: Name of this cluster in vCluster Platform, stamped on raw Gateway metrics as vcluster_platform_cluster.
+      type: string
+      defaultValue: loft-cluster
+    - variable: retention
+      label: Retention
+      description: How long token metrics are kept, which bounds how far back showback can look.
+      type: string
+      defaultValue: 30d
+    - variable: retentionSize
+      label: Retention size
+      description: Optional cap on the TSDB size, for example 15GB.
+      type: string
+    - variable: storageSize
+      label: Storage size
+      type: string
+      defaultValue: 20Gi
+    - variable: storageClass
+      label: Storage class
+      description: Leave empty for the default StorageClass.
+      type: string

@@ -1,0 +1,160 @@
+# Optional synthetic clients inside the tenant cluster that keep sending chat completions to the
+# tenant cluster's public, metered endpoint, one at a time each, varying the prompt, the answer
+# length, and whether the response streams. They give the showback dashboards steady traffic.
+# replicas 0 turns them off.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-traffic
+  labels:
+    inference.vcluster.com/stack: kubeai
+spec:
+  displayName: '[Metered Inference KubeAI] Traffic generator'
+  description: Sends a steady trickle of chat completions to the tenant cluster's metered endpoint.
+  defaultNamespace: kubeai
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: inference-traffic-prompts
+        namespace: {{ .Release.Namespace }}
+        labels:
+          app.kubernetes.io/name: inference-traffic
+      data:
+        # One per line, with no double quotes or backslashes: each is dropped into a JSON string as-is.
+        prompts.txt: |
+          Explain what a Kubernetes tenant cluster is in two sentences.
+          Write a haiku about scaling to zero.
+          List five things to check when a pod is stuck in Pending.
+          Summarise the difference between a Deployment and a StatefulSet.
+          Suggest three names for a GPU cloud aimed at startups.
+          Describe how an OpenAI-compatible chat completion request is structured.
+          Write a short product announcement for a managed inference service.
+          What are the trade-offs of running models on CPU instead of GPU?
+          Explain token-based pricing to a finance team.
+          Give a one-paragraph history of container orchestration.
+          Write a limerick about a noisy neighbour on a shared cluster.
+          Explain what a KV cache does during text generation.
+          Draft a friendly reminder that the staging cluster is being rebuilt tonight.
+          Compare chargeback and showback in three bullet points.
+          Describe a good naming convention for Kubernetes namespaces.
+      ---
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: inference-traffic
+        namespace: {{ .Release.Namespace }}
+        labels:
+          app.kubernetes.io/name: inference-traffic
+      spec:
+        replicas: {{ .Values.replicas | default "0" }}
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: inference-traffic
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: inference-traffic
+          spec:
+            containers:
+              - name: client
+                image: {{ .Values.image | default "curlimages/curl:8.22.0" | quote }}
+                command: [/bin/sh, -c]
+                args:
+                  - |
+                    rnd() { od -An -N2 -tu2 /dev/urandom | tr -d ' '; }
+                    COUNT=$(grep -c . /prompts/prompts.txt)
+                    TLS=""
+                    [ "${VERIFY_TLS}" = "true" ] || TLS="-k"
+                    echo "sending ${MODEL} completions to ${TARGET_URL}"
+                    while true; do
+                      PROMPT=$(sed -n "$(( $(rnd) % COUNT + 1 ))p" /prompts/prompts.txt)
+                      TOKENS=$(( 32 + $(rnd) % (MAX_TOKENS - 31) ))
+                      if [ $(( $(rnd) % 2 )) -eq 0 ]; then STREAM=true; else STREAM=false; fi
+                      BODY="{\"model\":\"${MODEL}\",\"max_tokens\":${TOKENS},\"stream\":${STREAM},\"messages\":[{\"role\":\"user\",\"content\":\"${PROMPT}\"}]}"
+                      if [ -n "${API_KEY}" ]; then
+                        RESULT=$(curl -s ${TLS} --max-time 600 -o /dev/null -w '%{http_code} in %{time_total}s' \
+                          -H 'Content-Type: application/json' -H "Authorization: Bearer ${API_KEY}" \
+                          -d "${BODY}" "${TARGET_URL}/chat/completions") || RESULT="failed with curl exit code $?"
+                      else
+                        RESULT=$(curl -s ${TLS} --max-time 600 -o /dev/null -w '%{http_code} in %{time_total}s' \
+                          -H 'Content-Type: application/json' \
+                          -d "${BODY}" "${TARGET_URL}/chat/completions") || RESULT="failed with curl exit code $?"
+                      fi
+                      echo "$(date -u +%H:%M:%S) stream=${STREAM} max_tokens=${TOKENS}: ${RESULT}"
+                      sleep $(( MIN_PAUSE + $(rnd) % (MAX_PAUSE - MIN_PAUSE + 1) ))
+                    done
+                env:
+                  - name: TARGET_URL
+                    value: {{ .Values.targetURL | quote }}
+                  - name: MODEL
+                    value: {{ .Values.modelId | quote }}
+                  - name: MAX_TOKENS
+                    value: {{ .Values.maxTokens | default "256" | toString | quote }}
+                  - name: MIN_PAUSE
+                    value: {{ .Values.minPauseSeconds | default "5" | toString | quote }}
+                  - name: MAX_PAUSE
+                    value: {{ .Values.maxPauseSeconds | default "30" | toString | quote }}
+                  - name: VERIFY_TLS
+                    value: {{ if eq (toString .Values.verifyTLS) "false" }}"false"{{ else }}"true"{{ end }}
+                  # Created by the model task.
+                  - name: API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: inference-api-key
+                        key: key
+                volumeMounts:
+                  - name: prompts
+                    mountPath: /prompts
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 16Mi
+            volumes:
+              - name: prompts
+                configMap:
+                  name: inference-traffic-prompts
+  parameters:
+    - variable: targetURL
+      label: API base URL
+      description: OpenAI-compatible base URL, ending in /v1.
+      type: string
+      required: true
+    - variable: modelId
+      label: Model ID
+      type: string
+      required: true
+    - variable: replicas
+      label: Clients
+      description: Each waits for its answer before sending the next request. 0 stops them.
+      type: number
+      defaultValue: "0"
+      min: 0
+      max: 8
+    - variable: maxTokens
+      label: Longest answer
+      description: Each request asks for between 32 and this many output tokens.
+      type: number
+      defaultValue: "256"
+      min: 33
+      max: 4096
+    - variable: minPauseSeconds
+      label: Shortest pause
+      type: number
+      defaultValue: "5"
+      min: 0
+    - variable: maxPauseSeconds
+      label: Longest pause
+      type: number
+      defaultValue: "30"
+      min: 0
+    - variable: verifyTLS
+      label: Verify the endpoint's certificate
+      type: boolean
+      defaultValue: "true"
+    - variable: image
+      label: Client image
+      description: Anything with a POSIX shell, curl, and od.
+      type: string
+      defaultValue: curlimages/curl:8.22.0

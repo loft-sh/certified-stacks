@@ -1,0 +1,156 @@
+# Step 0: Gateway API standard channel CRDs.
+#
+# agentgateway, cert-manager's HTTP-01 Gateway solver, and the per-tenant ListenerSets all need the
+# Gateway API CRDs, and upstream ships them only as a release bundle, not as a Helm chart. A hook Job
+# applies that bundle with server-side apply.
+#
+# `mode: verify` installs nothing. Use it when the cluster already manages the CRDs, for example a
+# GKE cluster with the Gateway API add-on. The Job then fails unless ListenerSet (Gateway API 1.5
+# or later, standard channel) is present, because tenant TLS depends on it.
+#
+# The CRDs are applied outside the Helm release on purpose: removing this App leaves them in place,
+# because deleting a CRD deletes every Gateway, HTTPRoute, and ListenerSet in the cluster.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-gateway-api-crds
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 0] Gateway API CRDs'
+  description: Applies the Gateway API standard channel CRDs, or verifies that a compatible version is already installed.
+  defaultNamespace: inference-gateway
+  wait: true
+  # Helm's own wait for the hook Job. Keep it below the task timeout in the StackTemplate.
+  timeout: 8m
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: gateway-api-crds
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: gateway-api-crds
+      rules:
+        - apiGroups: ["apiextensions.k8s.io"]
+          resources: ["customresourcedefinitions"]
+          verbs: ["get", "list", "watch", "create", "update", "patch"]
+        # The standard bundle ships a ValidatingAdmissionPolicy that blocks CRD downgrades.
+        - apiGroups: ["admissionregistration.k8s.io"]
+          resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+          verbs: ["get", "list", "create", "update", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: gateway-api-crds
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: gateway-api-crds
+      subjects:
+        - kind: ServiceAccount
+          name: gateway-api-crds
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: gateway-api-crds
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: gateway-api-crds
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: crds
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: MODE
+                    value: {{ .Values.mode | default "install" | quote }}
+                  - name: VERSION
+                    value: {{ .Values.version | default "1.6.2" | trimPrefix "v" | quote }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    crd=gateways.gateway.networking.k8s.io
+                    have=$(kubectl get crd "$crd" -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' 2>/dev/null || true)
+                    have=${have#v}
+                    channel=$(kubectl get crd "$crd" -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/channel}' 2>/dev/null || true)
+                    echo "installed Gateway API: ${have:-none} ${channel}"
+
+                    # Prints the higher of two x.y.z versions.
+                    newest() {
+                      printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
+                    }
+
+                    if [ "$MODE" = verify ]; then
+                      [ -n "$have" ] || { echo "Gateway API CRDs are not installed. Install them or set installGatewayAPI=true." >&2; exit 1; }
+                    elif [ -n "$have" ] && [ "$(newest "$have" "$VERSION")" = "$have" ]; then
+                      # Never downgrade: another component may depend on the newer version.
+                      echo "Gateway API $have is already at or above $VERSION; leaving it in place"
+                    else
+                      kubectl apply --server-side --force-conflicts --field-manager=metered-inference \
+                        -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/v${VERSION}/standard-install.yaml"
+                    fi
+
+                    # Tenant endpoints attach their own HTTPS listeners through ListenerSet, which is
+                    # standard from Gateway API 1.5.
+                    for kind in gatewayclasses gateways httproutes referencegrants listenersets; do
+                      kubectl wait --for condition=Established --timeout=120s "crd/${kind}.gateway.networking.k8s.io" || {
+                        echo "crd/${kind}.gateway.networking.k8s.io is missing. Gateway API 1.5 or later (standard channel) is required." >&2
+                        exit 1
+                      }
+                    done
+                    echo "Gateway API CRDs are ready"
+  parameters:
+    - variable: mode
+      label: Mode
+      description: install applies the standard channel bundle when it is missing or older; verify only checks that a compatible version is present.
+      type: string
+      options:
+        - install
+        - verify
+      defaultValue: install
+    - variable: version
+      label: Gateway API version
+      description: Version of the standard channel bundle to apply, without the leading v.
+      type: string
+      defaultValue: 1.6.2
+      validation: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      description: Secret in the release namespace that pulls the vCluster Platform image. Leave empty when the image pulls anonymously.
+      type: string

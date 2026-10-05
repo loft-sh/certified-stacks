@@ -1,0 +1,38 @@
+# Step 1, skipped. The nodeprovider task selects this App when `installNodeProvider` is false:
+# vCluster Platform already has a KubeVirt NodeProvider for tenant cluster nodes.
+#
+# The tenant cluster template expects that NodeProvider to be named `kubevirt`, to have the node
+# type `inference-large`, and to create its VMs in this cluster: in the `kubevirt` namespace, or in
+# each tenant cluster's namespace with the `VirtualCluster` namespace strategy.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-kubevirt-node-provider-skip
+  labels:
+    inference.vcluster.com/stack: platform
+spec:
+  displayName: '[Metered Inference Platform - 1] KubeVirt NodeProvider (skipped)'
+  description: Creates nothing. Used when the KubeVirt NodeProvider is managed outside this Stack.
+  defaultNamespace: inference-gateway
+  config:
+    manifests: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-kubevirt-node-provider-skipped
+      data:
+        reason: |
+          The KubeVirt NodeProvider was not created by the metered inference platform Stack
+          (installNodeProvider=false). The tenant cluster template selects node types from a
+          NodeProvider named kubevirt that must already exist.
+  # Declared so the nodeprovider task can pass one parameter set to either App. Nothing reads them.
+  parameters:
+    - variable: installKubeVirt
+      label: Install KubeVirt and CDI
+      type: string
+    - variable: emulation
+      label: Software emulation
+      type: string
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

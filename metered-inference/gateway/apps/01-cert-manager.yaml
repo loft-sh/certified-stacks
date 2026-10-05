@@ -1,0 +1,40 @@
+# Step 1: cert-manager, with its Gateway API integration turned on.
+#
+# The shared Gateway's ClusterIssuer solves Let's Encrypt HTTP-01 challenges with a temporary
+# HTTPRoute on the Gateway's plain HTTP listener, which needs `gatewayAPI.enabled`. HTTP-01 works
+# with any DNS provider, so tenants get publicly trusted certificates without a DNS-01 webhook.
+#
+# cert-manager checks for the Gateway API CRDs when it starts, so this task depends on step 0.
+# Keep the chart version here: chart fields in a referenced App are not templated.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-cert-manager
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 1] cert-manager'
+  description: Installs cert-manager with Gateway API support, for tenant endpoint certificates.
+  defaultNamespace: cert-manager
+  wait: true
+  timeout: 10m
+  config:
+    chart:
+      name: cert-manager
+      repoURL: oci://quay.io/jetstack/charts
+      version: v1.21.2
+    values: |-
+      crds:
+        enabled: true
+        # Keep the CRDs, and every Certificate in the cluster, when this release is removed.
+        keep: true
+      config:
+        apiVersion: controller.config.cert-manager.io/v1alpha1
+        kind: ControllerConfiguration
+        gatewayAPI:
+          enabled: true
+      extraArgs:
+        # The HTTP-01 self-check resolves tenant hostnames through public resolvers, so it passes
+        # even when cluster DNS cannot see the public zone.
+        - --acme-http01-solver-nameservers=1.1.1.1:53,8.8.8.8:53
+  parameters: []

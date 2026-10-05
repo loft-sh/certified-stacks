@@ -1,0 +1,350 @@
+# Step 1: the KubeVirt NodeProvider that tenant cluster nodes come from.
+#
+# The tenant cluster template (step 3) runs its nodes as KubeVirt VMs in this cluster, from a
+# NodeProvider named `kubevirt` with the node type `inference-large`. This App creates that
+# NodeProvider in the cluster the Stack is installed in. With `installKubeVirt`, vCluster Platform
+# also installs KubeVirt and CDI for it, into the NodeProvider's namespace `kubevirt`.
+#
+# The NodeProvider is a vCluster Platform object. Helm creates it through the Platform's
+# management API, which the Platform serves in its own cluster, so the Platform validates it and
+# checks that the license covers KubeVirt auto nodes.
+#
+# The Platform passes the same Helm values to the KubeVirt operator chart and to the chart that
+# creates the KubeVirt and CDI resources. The values here:
+#   - keep KubeVirt's default placement for its operator, virt-api, and virt-controller, minus the
+#     requirement to run on control plane nodes. Managed clusters such as EKS, GKE, and AKS have
+#     no control plane nodes to schedule on.
+#   - block uninstalling KubeVirt while any VM exists, and CDI while any DataVolume (VM disk)
+#     does. By default both can be removed with their workloads still there, and removing this
+#     App deletes the NodeProvider, which uninstalls them.
+#   - with `emulation`, run VMs without hardware virtualization, much more slowly.
+#
+# The Platform rejects changes to `installKubeVirt` once the NodeProvider exists.
+#
+# The post-install Job waits until the NodeProvider is Available with its node type, KubeVirt and
+# CDI are Available, and, without emulation, a node offers hardware virtualization. A license
+# without KubeVirt auto nodes, nodes without /dev/kvm, or a failed KubeVirt install then fails
+# this task instead of the first tenant cluster.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-kubevirt-node-provider
+  labels:
+    inference.vcluster.com/stack: platform
+spec:
+  displayName: '[Metered Inference Platform - 1] KubeVirt NodeProvider'
+  description: Creates the kubevirt NodeProvider for tenant cluster VMs, and optionally installs KubeVirt and CDI for it.
+  defaultNamespace: inference-gateway
+  wait: true
+  # Covers pulling and starting KubeVirt and CDI. Keep it below the nodeprovider task's timeout.
+  timeout: 20m
+  config:
+    manifests: |-
+      {{- $installKubeVirt := ne (toString .Values.installKubeVirt) "false" }}
+      {{- $emulation := eq (toString .Values.emulation) "true" }}
+      {{- $loft := .Values.loft | default dict }}
+      apiVersion: management.loft.sh/v1
+      kind: NodeProvider
+      metadata:
+        name: kubevirt
+      spec:
+        displayName: KubeVirt
+        kubeVirt:
+          clusterRef:
+            # The cluster this App is installed in, which vCluster Platform passes as loft.cluster.
+            cluster: {{ $loft.cluster | default "loft-cluster" | quote }}
+            # The endpoint App's vmNamespace. The Platform installs KubeVirt and CDI here too.
+            namespace: kubevirt
+          {{- if $installKubeVirt }}
+          deploy:
+            kubevirt:
+              enabled: true
+              helmValues: |
+                kubevirt:
+                  operator:
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution: null
+                  spec:
+                    uninstallStrategy: BlockUninstallIfWorkloadsExist
+                    infra:
+                      nodePlacement:
+                        affinity:
+                          nodeAffinity:
+                            preferredDuringSchedulingIgnoredDuringExecution:
+                              - weight: 100
+                                preference:
+                                  matchExpressions:
+                                    - key: node-role.kubernetes.io/worker
+                                      operator: DoesNotExist
+                        tolerations:
+                          - key: node-role.kubernetes.io/control-plane
+                            operator: Exists
+                            effect: NoSchedule
+                          - key: node-role.kubernetes.io/master
+                            operator: Exists
+                            effect: NoSchedule
+                    {{- if $emulation }}
+                    configuration:
+                      developerConfiguration:
+                        useEmulation: true
+                    {{- end }}
+                cdi:
+                  spec:
+                    uninstallStrategy: BlockUninstallIfWorkloadsExist
+          {{- end }}
+          nodeTypes:
+            # The tenant cluster template's VM size. 6 vCPU and 8Gi fit a 1.5B Ollama
+            # model, Open WebUI, and the tenant cluster's add-ons.
+            - name: inference-large
+              displayName: Inference large (6 vCPU, 8Gi)
+              metadata: {}
+              mergeVirtualMachineTemplate:
+                spec:
+                  template:
+                    spec:
+                      domain:
+                        cpu:
+                          cores: 6
+                        resources:
+                          requests:
+                            memory: 8Gi
+                        devices:
+                          interfaces:
+                            # Masquerade, KubeVirt's core pod network binding, works on any CNI and
+                            # node OS with no feature gate or AppArmor exception. The Gateway reaches
+                            # the VM at its virt-launcher pod's address. Inside, every VM has the
+                            # same address, so a tenant cluster runs on one VM.
+                            - name: default
+                              masquerade: {}
+                      networks:
+                        - name: default
+                          pod: {}
+          # The Platform prefixes the DataVolume with each node's name, and adds cloud-init.
+          virtualMachineTemplate:
+            spec:
+              dataVolumeTemplates:
+                - metadata:
+                    name: data
+                  spec:
+                    pvc:
+                      accessModes: [ReadWriteOnce]
+                      resources:
+                        requests:
+                          storage: 40Gi
+                    source:
+                      registry:
+                        url: docker://quay.io/containerdisks/ubuntu:26.04
+              runStrategy: Always
+              template:
+                spec:
+                  domain:
+                    devices:
+                      disks:
+                        - name: rootdisk
+                          disk:
+                            bus: virtio
+                  volumes:
+                    - name: rootdisk
+                      dataVolume:
+                        name: data
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metered-inference-kubevirt-status
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: metered-inference-kubevirt-status
+      rules:
+        - apiGroups: ["storage.loft.sh"]
+          resources: ["nodeproviders"]
+          resourceNames: ["kubevirt"]
+          verbs: ["get"]
+        - apiGroups: ["storage.loft.sh"]
+          resources: ["nodetypes"]
+          resourceNames: ["kubevirt.inference-large"]
+          verbs: ["get"]
+        # KubeVirt's resource is namespaced, CDI's is not. Either may have been installed outside
+        # this Stack, so both are found by listing.
+        - apiGroups: ["kubevirt.io"]
+          resources: ["kubevirts"]
+          verbs: ["get", "list"]
+        - apiGroups: ["cdi.kubevirt.io"]
+          resources: ["cdis"]
+          verbs: ["get", "list"]
+        # Hardware virtualization shows up as allocatable devices.kubevirt.io/kvm on a node.
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["list"]
+        # The VMs' namespace, which only the KubeVirt install creates.
+        - apiGroups: [""]
+          resources: ["namespaces"]
+          resourceNames: ["kubevirt"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: metered-inference-kubevirt-status
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: metered-inference-kubevirt-status
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-kubevirt-status
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: metered-inference-kubevirt-status
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        # One attempt: a retry would repeat the waits and outlast Helm's timeout, hiding the reason.
+        # The Stack retries the task instead.
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: metered-inference-kubevirt-status
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: status
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: INSTALL_KUBEVIRT
+                    value: {{ if $installKubeVirt }}"true"{{ else }}"false"{{ end }}
+                  - name: EMULATION
+                    value: {{ if $emulation }}"true"{{ else }}"false"{{ end }}
+                  # Together they stay below the App's Helm timeout.
+                  - name: PROVIDER_TIMEOUT_SECONDS
+                    value: "240"
+                  - name: KUBEVIRT_TIMEOUT_SECONDS
+                    value: "600"
+                  - name: KVM_TIMEOUT_SECONDS
+                    value: "120"
+                  - name: POLL_SECONDS
+                    value: "10"
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    # Runs a check until it succeeds, or fails once the timeout has passed.
+                    until_ok() {
+                      deadline=$(( $(date +%s) + $1 )); shift
+                      while ! "$@"; do
+                        [ "$(date +%s)" -lt "$deadline" ] || return 1
+                        sleep "$POLL_SECONDS"
+                      done
+                    }
+
+                    provider='{}'
+                    phase=""
+                    provider_settled() {
+                      current=$(kubectl get nodeproviders.storage.loft.sh kubevirt -o json 2>/dev/null) || return 1
+                      provider=$current
+                      phase=$(printf '%s' "$provider" | jq -r '.status.phase // ""')
+                      [ "$phase" = Available ] || [ "$phase" = Failed ]
+                    }
+                    echo "waiting for NodeProvider kubevirt"
+                    if ! until_ok "$PROVIDER_TIMEOUT_SECONDS" provider_settled || [ "$phase" != Available ]; then
+                      status=$(printf '%s' "$provider" | jq -r '[.status.phase // "no status yet", .status.reason, .status.message]
+                        | map(select(. != null and . != "")) | join(": ")')
+                      echo "NodeProvider kubevirt is not Available: ${status}. The reason FeatureNotAllowed means the license does not include KubeVirt auto nodes. See kubectl get nodeprovider.management.loft.sh kubevirt -o yaml" >&2
+                      exit 1
+                    fi
+                    kubectl get nodetypes.storage.loft.sh kubevirt.inference-large -o name >/dev/null || {
+                      echo "NodeProvider kubevirt has no node type kubevirt.inference-large" >&2
+                      exit 1
+                    }
+                    echo "NodeProvider kubevirt is Available with node type kubevirt.inference-large"
+
+                    # The KubeVirt and CDI resources, wherever they were installed.
+                    kv=""
+                    kubevirt_available() {
+                      kv=$(kubectl get kubevirts.kubevirt.io -A -o json 2>/dev/null | jq -c '.items[0] // empty')
+                      [ -n "$kv" ] && printf '%s' "$kv" | jq -e '.status.conditions[]? | select(.type == "Available" and .status == "True")' >/dev/null
+                    }
+                    cdi_available() {
+                      kubectl get cdis.cdi.kubevirt.io -o json 2>/dev/null \
+                        | jq -e '.items[0].status.conditions[]? | select(.type == "Available" and .status == "True")' >/dev/null
+                    }
+                    both_available() {
+                      kubevirt_available && cdi_available
+                    }
+                    echo "waiting for KubeVirt and CDI"
+                    until_ok "$KUBEVIRT_TIMEOUT_SECONDS" both_available || {
+                      if kubevirt_available; then missing="CDI, which imports the VM disks,"; else missing=KubeVirt; fi
+                      if [ "$INSTALL_KUBEVIRT" = true ]; then
+                        hint="vCluster Platform installs both into the kubevirt namespace: see kubectl -n kubevirt get pods."
+                      else
+                        hint="installKubeVirt is false, so both must already be installed. Install them or set installKubeVirt=true."
+                      fi
+                      echo "$missing is not Available after ${KUBEVIRT_TIMEOUT_SECONDS}s. $hint" >&2
+                      exit 1
+                    }
+                    # The NodeProvider creates VMs in kubevirt. Only the KubeVirt install creates it.
+                    kubectl get namespace kubevirt -o name >/dev/null || {
+                      echo "Namespace kubevirt does not exist. The NodeProvider creates its VMs there: create it." >&2
+                      exit 1
+                    }
+                    echo "KubeVirt and CDI are Available"
+
+                    # An existing KubeVirt may already run with emulation.
+                    if [ "$EMULATION" = true ] || printf '%s' "$kv" | jq -e '.spec.configuration.developerConfiguration.useEmulation == true' >/dev/null; then
+                      echo "KubeVirt runs VMs with software emulation"
+                      exit 0
+                    fi
+                    # Nodes without /dev/kvm report the device as unhealthy, so none of it is allocatable.
+                    kvm_nodes=0
+                    kvm_available() {
+                      kvm_nodes=$(kubectl get nodes -o json | jq '[.items[]
+                        | select((.status.allocatable["devices.kubevirt.io/kvm"] // "0") != "0")] | length')
+                      [ "${kvm_nodes:-0}" -gt 0 ]
+                    }
+                    until_ok "$KVM_TIMEOUT_SECONDS" kvm_available || {
+                      echo "No node offers hardware virtualization (allocatable devices.kubevirt.io/kvm), so VMs cannot start. Use nodes with /dev/kvm, such as bare metal or VMs with nested virtualization, or set kubeVirtEmulation=true for a slow trial." >&2
+                      exit 1
+                    }
+                    echo "${kvm_nodes} node(s) offer hardware virtualization"
+  parameters:
+    - variable: installKubeVirt
+      label: Install KubeVirt and CDI
+      type: boolean
+      defaultValue: "true"
+    - variable: emulation
+      label: Software emulation
+      type: boolean
+      defaultValue: "false"
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

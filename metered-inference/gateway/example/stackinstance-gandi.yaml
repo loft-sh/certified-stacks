@@ -1,0 +1,28 @@
+# Tenant endpoints under inference.example.com, with a wildcard DNS record in Gandi LiveDNS and a
+# Let's Encrypt certificate per tenant cluster for its exact hostnames. Let's Encrypt validates each
+# certificate with HTTP-01 through the Gateway, so no Gandi DNS-01 webhook is needed.
+#
+# Before applying, create the external-dns-credentials Secret with GANDI_PAT, from a token scoped
+# to the example.com domain (see the README).
+# Start with letsencrypt-staging, then switch to letsencrypt once certificates issue.
+# Apply it in a project namespace, for example `-n p-default`.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: metered-inference-gateway
+spec:
+  displayName: Metered inference gateway
+  owner:
+    user: admin
+  destination:
+    cluster:
+      name: loft-cluster
+  templateRef:
+    name: metered-inference-gateway
+  parameters:
+    domain: inference.example.com
+    tlsIssuer: letsencrypt-staging
+    dnsProvider: gandi
+    dnsCredentialsSecret: external-dns-credentials
+    clusterName: loft-cluster
+  prunePolicy: Prune

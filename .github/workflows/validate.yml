@@ -18,12 +18,14 @@ on:
     paths:
       - 'run-ai/**'
       - 'nvidia-dynamo/**'
+      - 'metered-inference/**'
       - '.github/workflows/validate.yml'
   pull_request:
     branches: [main]
     paths:
       - 'run-ai/**'
       - 'nvidia-dynamo/**'
+      - 'metered-inference/**'
       - '.github/workflows/validate.yml'
 
 permissions:
@@ -69,6 +71,8 @@ jobs:
         run: ./run-ai/render.sh --check
       - name: Check NVIDIA Dynamo manifests
         run: ./nvidia-dynamo/test-certified-manifests.sh
+      - name: Check metered inference manifests
+        run: ./metered-inference/test-certified-manifests.sh
       - name: Start vCluster Platform
         run: |
           cat > "$RUNNER_TEMP/platform-values.yaml" <<'EOF'
@@ -87,10 +91,10 @@ jobs:
           kubectl wait --for=condition=Available apiservice/v1.management.loft.sh --timeout=5m
       - name: Validate manifests
         run: |
-          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo; do
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo metered-inference/gateway metered-inference/platform metered-inference/tenant; do
             kubectl delete --ignore-not-found --recursive --filename "$directory"
           done
-          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo; do
+          for directory in run-ai/dedicated-control-plane run-ai/central-control-plane nvidia-dynamo metered-inference/gateway metered-inference/platform metered-inference/tenant; do
             while IFS= read -r -d '' manifest; do
               echo "::group::Validate $manifest"
               status=0

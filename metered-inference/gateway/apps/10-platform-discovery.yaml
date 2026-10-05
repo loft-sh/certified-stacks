@@ -1,0 +1,205 @@
+# Step 10: find how this cluster's vCluster Platform is reached, for the observability connector.
+#
+# The Platform observability connector (step 7) and Grafana (step 8) need the Platform's external
+# host and the namespace the Platform runs in. Unless the platformHost and platformNamespace
+# parameters give them, the post-install Job finds them:
+#   host       what the Platform reports as its own host, through its Self API (status.loftHost)
+#   namespace  the namespace of the Service behind the v1.management.loft.sh APIService
+# It writes both to the metered-inference-platform-discovery ConfigMap, which the StackTemplate
+# reads as the platform task's outputs and passes on to steps 7, 8, and 9.
+#
+# With platformIntegration off nothing uses them, so a failed lookup only logs a note and writes
+# placeholders: a Stack output cannot be left empty.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-platform-discovery
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 10] Platform discovery'
+  description: Finds the vCluster Platform host and namespace that the observability connector and Grafana use.
+  defaultNamespace: inference-observability
+  wait: true
+  timeout: 5m
+  config:
+    manifests: |-
+      # The Job below adds host and namespace.
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-platform-discovery
+        namespace: {{ .Release.Namespace }}
+      data: {}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metered-inference-platform-discovery
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: metered-inference-platform-discovery
+      rules:
+        # Self is the Platform's "who am I" API: creating one stores nothing, and its status
+        # carries the Platform's host.
+        - apiGroups: ["management.loft.sh"]
+          resources: ["selves"]
+          verbs: ["create"]
+        - apiGroups: ["apiregistration.k8s.io"]
+          resources: ["apiservices"]
+          resourceNames: ["v1.management.loft.sh"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: metered-inference-platform-discovery
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: metered-inference-platform-discovery
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-platform-discovery
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: metered-inference-platform-discovery
+        namespace: {{ .Release.Namespace }}
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: ["metered-inference-platform-discovery"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: metered-inference-platform-discovery
+        namespace: {{ .Release.Namespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: metered-inference-platform-discovery
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-platform-discovery
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: metered-inference-platform-discovery
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        backoffLimit: 2
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: metered-inference-platform-discovery
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: discover
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                volumeMounts:
+                  - name: tmp
+                    mountPath: /tmp
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: NAMESPACE
+                    value: {{ .Release.Namespace }}
+                  - name: INTEGRATION
+                    value: {{ if eq (toString .Values.platformIntegration) "true" }}"true"{{ else }}"false"{{ end }}
+                  - name: HOST_OVERRIDE
+                    value: {{ .Values.platformHost | default "" | quote }}
+                  - name: NAMESPACE_OVERRIDE
+                    value: {{ .Values.platformNamespace | default "" | quote }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    problem=""
+                    note() { problem="${problem:+$problem; }$1"; }
+
+                    host=$(printf '%s' "$HOST_OVERRIDE" | sed -e 's#^[a-z]*://##' -e 's#/*$##')
+                    if [ -z "$host" ]; then
+                      # --raw skips client-side validation, which would need permission to list CRDs.
+                      if self=$(printf '%s' '{"apiVersion":"management.loft.sh/v1","kind":"Self","metadata":{"name":"metered-inference"}}' \
+                          | kubectl create --raw /apis/management.loft.sh/v1/selves -f - 2>/tmp/self.err); then
+                        host=$(printf '%s' "$self" | jq -r '.status.loftHost // ""')
+                        [ -n "$host" ] || note "vCluster Platform reports no host of its own"
+                      else
+                        note "cannot ask vCluster Platform for its host: $(tr '\n' ' ' </tmp/self.err)"
+                      fi
+                    fi
+                    if [ -n "$host" ] && ! printf '%s' "$host" | grep -Eq '^[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?(:[0-9]+)?$'; then
+                      note "$host is not a host name"
+                      host=""
+                    fi
+
+                    namespace="$NAMESPACE_OVERRIDE"
+                    if [ -z "$namespace" ]; then
+                      namespace=$(kubectl get apiservice v1.management.loft.sh -o jsonpath='{.spec.service.namespace}' 2>/tmp/apiservice.err) || namespace=""
+                      [ -n "$namespace" ] || note "cannot find the namespace vCluster Platform runs in: $(tr '\n' ' ' </tmp/apiservice.err)"
+                    fi
+
+                    if [ -n "$problem" ]; then
+                      if [ "$INTEGRATION" = true ]; then
+                        echo "${problem}. Set platformHost and platformNamespace on the gateway Stack, or platformIntegration false." >&2
+                        exit 1
+                      fi
+                      echo "platformIntegration is off, so nothing needs these: ${problem}"
+                    fi
+
+                    # Stack outputs cannot be empty. Nothing reads the placeholders with platformIntegration off.
+                    patch=$(jq -cn --arg host "${host:-not-discovered}" --arg namespace "${namespace:-vcluster-platform}" \
+                      '{data: {host: $host, namespace: $namespace}}')
+                    kubectl -n "$NAMESPACE" patch configmap metered-inference-platform-discovery --type merge -p "$patch"
+                    echo "vCluster Platform: https://${host:-not-discovered} in namespace ${namespace:-vcluster-platform}"
+            volumes:
+              - name: tmp
+                emptyDir: {}
+  parameters:
+    - variable: platformIntegration
+      label: Serve through vCluster Platform
+      type: boolean
+      defaultValue: "true"
+    - variable: platformHost
+      label: Platform host
+      description: Overrides the host the Platform reports for itself.
+      type: string
+    - variable: platformNamespace
+      label: Platform namespace
+      description: Overrides the namespace found from the Platform's API service.
+      type: string
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

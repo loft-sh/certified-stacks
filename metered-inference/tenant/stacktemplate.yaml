@@ -1,0 +1,248 @@
+# Serves one open-weights model from a tenant cluster: KubeAI with Ollama or vLLM behind an
+# OpenAI-compatible endpoint, and Open WebUI as a chat front end.
+#
+# Deploy it into a tenant cluster whose nodes are KubeVirt VMs, with the tenant cluster template's
+# `deploy.stacks`, and deploy the metered-inference-endpoint App from the same template's
+# `spaceTemplate.apps` to publish the endpoints through the metered-inference-gateway Stack. See
+# ../source/virtualclustertemplate.yaml. The template computes the public URLs, so both halves agree
+# before anything is deployed.
+#
+# The metered-inference-platform Stack registers this StackTemplate and every App in apps/. To
+# register them yourself instead, apply the Apps before this template.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: metered-inference-kubeai
+spec:
+  displayName: Metered inference (KubeAI)
+  icon: https://avatars.githubusercontent.com/u/232319222
+  description: >-
+    Serves one open-weights model on a tenant cluster with KubeAI, with Open WebUI as a chat front
+    end, published and token-metered through the control plane cluster's shared inference Gateway.
+  parameters:
+    # Model.
+    - variable: modelURL
+      label: Model
+      description: >-
+        ollama://<model>:<tag> for engine OLlama, hf://<org>/<model> for VLLM. Ollama pulls
+        pre-quantised weights, which is what fits a CPU node: about 1GB for a 1.5B model. In
+        increasing order of quality and decreasing order of speed: ollama://qwen2.5:0.5b,
+        ollama://llama3.2:1b, ollama://qwen2.5:1.5b, ollama://qwen2.5:3b.
+      type: string
+      required: true
+      defaultValue: ollama://qwen2.5:1.5b
+      validation: '^(ollama|hf|s3|gs|oss|pvc)://.+$'
+    - variable: modelId
+      label: Model ID
+      description: What clients send as `model`. A DNS-1123 label of at most 40 characters, so not the Ollama tag verbatim.
+      type: string
+      required: true
+      defaultValue: qwen2-5-1-5b
+      validation: '^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$'
+    - variable: engine
+      label: Serving engine
+      description: OLlama for ollama:// models. VLLM for hf:// models; it needs far more memory, or a GPU.
+      type: string
+      options:
+        - OLlama
+        - VLLM
+      defaultValue: OLlama
+    - variable: engineArgs
+      label: Engine arguments
+      description: Comma-separated model server flags. Empty for Ollama; vLLM might want --max-model-len=4096.
+      type: string
+      defaultValue: ""
+    - variable: envVars
+      label: Engine environment
+      description: Comma-separated KEY=VALUE pairs for the model server, for example VLLM_CPU_KVCACHE_SPACE=2.
+      type: string
+      defaultValue: ""
+    - variable: resourceProfile
+      label: Resource profile
+      description: cpu:1, or gpu:<count> for NVIDIA GPUs (the tenant cluster needs the NVIDIA device plugin).
+      type: string
+      defaultValue: cpu:1
+      validation: '^(cpu:1|gpu:[1-8])$'
+    - variable: cpuRequest
+      label: CPU per model replica
+      type: string
+      defaultValue: "3"
+    - variable: memoryRequest
+      label: Memory per model replica
+      type: string
+      defaultValue: 3Gi
+    - variable: minReplicas
+      label: Minimum replicas
+      description: 1 answers immediately. 0 scales to zero when idle; the cold start is a model reload, not a node provision.
+      type: number
+      defaultValue: "1"
+      min: 0
+      max: 4
+    - variable: maxReplicas
+      label: Maximum replicas
+      type: number
+      defaultValue: "1"
+      min: 1
+      max: 4
+
+    # Endpoints. The tenant cluster template computes these from the gateway Stack's domain.
+    - variable: apiURL
+      label: Public API URL
+      description: The tenant cluster's OpenAI-compatible base URL through the shared Gateway, ending in /v1.
+      type: string
+      required: true
+      validation: '^https?://[^/]+/v1$'
+    - variable: chatURL
+      label: Public chat URL
+      description: Where the chat UI is published. Empty when there is none.
+      type: string
+      defaultValue: ""
+    - variable: apiKey
+      label: API key
+      description: >-
+        Bearer token the Gateway requires on the API. Must match the metered-inference-endpoint
+        App's apiKey. Empty for an open endpoint.
+      type: password
+      defaultValue: ""
+      validation: '^$|^[A-Za-z0-9._~-]{16,256}$'
+    - variable: verifyTLS
+      label: Verify the endpoint's certificate
+      description: false unless the gateway Stack uses the letsencrypt issuer. This tenant cluster does not trust the self-signed or Let's Encrypt staging CA.
+      type: boolean
+      defaultValue: "true"
+    - variable: apiNodePort
+      label: API node port
+      description: Must match the metered-inference-endpoint App's apiNodePort.
+      type: string
+      defaultValue: "30080"
+      validation: '^3[0-9]{4}$'
+    - variable: chatNodePort
+      label: Chat UI node port
+      type: string
+      defaultValue: "30081"
+      validation: '^3[0-9]{4}$'
+
+    # Chat UI and checks.
+    - variable: chatUI
+      label: Deploy the chat UI
+      type: boolean
+      defaultValue: "true"
+    - variable: meterChat
+      label: Meter the chat UI
+      description: Send Open WebUI's requests through the public, metered endpoint rather than straight to KubeAI.
+      type: boolean
+      defaultValue: "true"
+    - variable: verifyPublicEndpoint
+      label: Wait for the public endpoint
+      description: >-
+        Keep the model task pending until the public API URL answers through the Gateway. This
+        proves DNS, the certificate, and the control plane cluster side end to end.
+      type: boolean
+      defaultValue: "false"
+    - variable: trafficGenerators
+      label: Synthetic traffic
+      description: Clients inside the tenant cluster that keep sending chat completions to the public API. 0 turns them off.
+      type: number
+      defaultValue: "0"
+      min: 0
+      max: 4
+
+  tasks:
+    - name: kubeai
+      timeout: 15m
+      app:
+        templateRef:
+          name: metered-inference-kubeai
+        parameters:
+          apiNodePort: "{{ .Values.apiNodePort }}"
+          chatNodePort: "{{ .Values.chatNodePort }}"
+          cpuRequest: "{{ .Values.cpuRequest }}"
+          memoryRequest: "{{ .Values.memoryRequest }}"
+          scaleDownWindow: 5m
+          chatUI: "{{ .Values.chatUI }}"
+          chatBackendURL: '{{ if .Values.meterChat }}{{ .Values.apiURL }}{{ else }}http://kubeai/openai/v1{{ end }}'
+          chatBackendVerifyTLS: "{{ .Values.verifyTLS }}"
+          apiKey: "{{ .Values.apiKey }}"
+
+    - name: model
+      dependsOn: [kubeai]
+      timeout: 20m
+      app:
+        templateRef:
+          name: metered-inference-model
+        parameters:
+          modelId: "{{ .Values.modelId }}"
+          modelURL: "{{ .Values.modelURL }}"
+          engine: "{{ .Values.engine }}"
+          engineArgs: "{{ .Values.engineArgs }}"
+          envVars: "{{ .Values.envVars }}"
+          resourceProfile: "{{ .Values.resourceProfile }}"
+          minReplicas: "{{ .Values.minReplicas }}"
+          maxReplicas: "{{ .Values.maxReplicas }}"
+          targetRequests: "4"
+          apiURL: "{{ .Values.apiURL }}"
+          chatURL: "{{ .Values.chatURL }}"
+          apiKey: "{{ .Values.apiKey }}"
+          verifyPublicEndpoint: "{{ .Values.verifyPublicEndpoint }}"
+          verifyTLS: "{{ .Values.verifyTLS }}"
+          apiServiceName: kubeai
+          chatServiceName: open-webui
+          reportName: inference-report
+          readyTimeoutSeconds: "900"
+          toolsImage: alpine/kubectl:1.36.4
+      outputs:
+        - name: publicurl
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: kubeai
+            name: inference-report
+            jsonPath: "{.data.publicURL}"
+        - name: publicchaturl
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: kubeai
+            name: inference-report
+            jsonPath: "{.data.publicChatURL}"
+        - name: internalurl
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: kubeai
+            name: inference-report
+            jsonPath: "{.data.internalURL}"
+        - name: modelid
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: kubeai
+            name: inference-report
+            jsonPath: "{.data.modelId}"
+
+    - name: traffic
+      dependsOn: [model]
+      timeout: 5m
+      app:
+        templateRef:
+          name: metered-inference-traffic
+        parameters:
+          targetURL: "{{ .Values.apiURL }}"
+          modelId: "{{ .Values.modelId }}"
+          replicas: "{{ .Values.trafficGenerators }}"
+          # A Stack task passes only what it names, so the App's own defaults are repeated here.
+          maxTokens: "256"
+          minPauseSeconds: "5"
+          maxPauseSeconds: "30"
+          verifyTLS: "{{ .Values.verifyTLS }}"
+          image: curlimages/curl:8.22.0
+
+  publishedOutputs:
+    - name: inferenceEndpoint
+      fromTask: {task: model, output: publicurl}
+    - name: chatUI
+      fromTask: {task: model, output: publicchaturl}
+    - name: internalEndpoint
+      fromTask: {task: model, output: internalurl}
+    - name: modelID
+      fromTask: {task: model, output: modelid}

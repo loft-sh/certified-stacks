@@ -1,0 +1,140 @@
+# Configures vCluster Platform to offer metered inference tenant clusters. Install it once per
+# control plane cluster, after the metered-inference-gateway Stack, in the same cluster.
+#
+# It reads the gateway Stack's endpoint contract, then creates the KubeVirt NodeProvider tenant
+# cluster nodes come from (optionally installing KubeVirt and CDI), registers the
+# metered-inference-kubeai Stack and its Apps, and creates the Metered inference (KubeVirt) tenant
+# cluster template with the gateway's endpoint settings already filled in. Every parameter has a
+# default that suits a cluster whose nodes have hardware virtualization.
+#
+# Apply every App in apps/ before this template. See metered-inference/README.md.
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: metered-inference-platform
+spec:
+  displayName: Metered inference platform configuration
+  icon: vcluster-box.svg
+  description: >-
+    Sets up vCluster Platform for metered inference tenant clusters on a control plane cluster that
+    runs the metered-inference-gateway Stack: a KubeVirt NodeProvider, the metered-inference-kubeai
+    tenant Stack, and a tenant cluster template wired to the shared inference Gateway.
+  parameters:
+    # Tenant cluster nodes.
+    - variable: installNodeProvider
+      label: Create the KubeVirt NodeProvider
+      description: >-
+        Create the kubevirt NodeProvider, with the inference-large node type, that tenant clusters
+        run their nodes on. Set false when the Platform already has a NodeProvider named kubevirt.
+      type: boolean
+      defaultValue: "true"
+    - variable: installKubeVirt
+      label: Install KubeVirt and CDI
+      description: >-
+        Have the NodeProvider install KubeVirt and CDI into the kubevirt namespace. Set false when
+        the cluster already runs both. Cannot be changed once the NodeProvider exists.
+      type: boolean
+      defaultValue: "true"
+    - variable: kubeVirtEmulation
+      label: KubeVirt software emulation
+      description: >-
+        Run VMs with software emulation, for nodes without hardware virtualization (/dev/kvm).
+        VMs and models run much more slowly; for trials only. Only applies when this Stack
+        installs KubeVirt.
+      type: boolean
+      defaultValue: "false"
+
+    # Tenant cluster template.
+    - variable: installClusterTemplate
+      label: Create the tenant cluster template
+      description: >-
+        Create the Metered inference (KubeVirt) tenant cluster template. Set false to maintain your
+        own copy instead.
+      type: boolean
+      defaultValue: "true"
+    - variable: gatewayRevision
+      label: Gateway settings revision
+      description: >-
+        The template is built from the gateway Stack's settings as they were when this Stack was
+        installed. After changing the gateway's domain or TLS issuer, change this value to read
+        them again.
+      type: string
+      defaultValue: "1"
+
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      description: >-
+        If the vCluster Platform image needs a pull Secret, its name. It must exist in the
+        inference-gateway namespace, and the tenant cluster template passes it to each tenant
+        cluster's endpoint App. Leave empty otherwise.
+      type: string
+      defaultValue: ""
+      validation: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+
+  tasks:
+    # The gateway Stack's contract: how tenant endpoints are published.
+    - name: contract
+      timeout: 20m
+      app:
+        templateRef:
+          name: metered-inference-gateway-contract
+        parameters:
+          gatewayRevision: "{{ .Values.gatewayRevision }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+      outputs:
+        - name: domain
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.domain}"
+        - name: scheme
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.scheme}"
+        - name: tlsissuer
+          fromResource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: inference-gateway
+            name: metered-inference-gateway
+            jsonPath: "{.data.tlsIssuer}"
+
+    - name: nodeprovider
+      timeout: 25m
+      app:
+        templateRef:
+          name: 'metered-inference-kubevirt-node-provider{{ if not .Values.installNodeProvider }}-skip{{ end }}'
+        parameters:
+          installKubeVirt: "{{ .Values.installKubeVirt }}"
+          emulation: "{{ .Values.kubeVirtEmulation }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+
+    - name: tenantstack
+      timeout: 5m
+      app:
+        templateRef:
+          name: metered-inference-tenant-stack
+
+    # Created last, so tenants never see a template whose NodeProvider or Stack is missing.
+    - name: clustertemplate
+      dependsOn: [contract, nodeprovider, tenantstack]
+      timeout: 5m
+      app:
+        templateRef:
+          name: 'metered-inference-cluster-template{{ if not .Values.installClusterTemplate }}-skip{{ end }}'
+        parameters:
+          domain: "{{ .Outputs.contract.domain }}"
+          scheme: "{{ .Outputs.contract.scheme }}"
+          tlsIssuer: "{{ .Outputs.contract.tlsissuer }}"
+          jobImagePullSecret: "{{ .Values.jobImagePullSecret }}"
+
+  publishedOutputs:
+    - name: endpointDomain
+      fromTask:
+        task: contract
+        output: domain

@@ -1,0 +1,136 @@
+# KubeAI, deployed inside the tenant cluster: Model custom resources become model servers behind
+# one OpenAI-compatible endpoint, with scale-from-zero. It bundles Open WebUI as a chat front end.
+#
+# Both Services are NodePorts on fixed ports, because the tenant cluster's nodes are KubeVirt VMs
+# whose addresses the control plane cluster can reach directly: the metered-inference-endpoint
+# App on the control plane cluster points the shared Gateway at <VM address>:<node port>.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-kubeai
+  labels:
+    inference.vcluster.com/stack: kubeai
+spec:
+  displayName: '[Metered Inference KubeAI] KubeAI'
+  description: Installs KubeAI and Open WebUI, exposed on fixed node ports for the shared inference Gateway.
+  defaultNamespace: kubeai
+  wait: true
+  timeout: 12m
+  icon: https://raw.githubusercontent.com/kubeai-project/kubeai/main/docs/screenshots/kubeai-logo.png
+  config:
+    chart:
+      name: kubeai
+      repoURL: oci://ghcr.io/kubeai-project/charts
+      version: 0.23.5
+    values: |-
+      service:
+        type: NodePort
+        port: 80
+        nodePort: {{ .Values.apiNodePort | default "30080" }}
+      resourceProfiles:
+        cpu:
+          imageName: cpu
+          requests:
+            cpu: {{ .Values.cpuRequest | default "3" | quote }}
+            memory: {{ .Values.memoryRequest | default "3Gi" | quote }}
+        # One NVIDIA GPU per unit, for resourceProfile gpu:<count>. Needs the NVIDIA device plugin
+        # (or GPU Operator) on the tenant cluster's nodes.
+        gpu:
+          imageName: nvidia-gpu
+          requests:
+            cpu: {{ .Values.cpuRequest | default "3" | quote }}
+            memory: {{ .Values.memoryRequest | default "3Gi" | quote }}
+            nvidia.com/gpu: "1"
+          limits:
+            nvidia.com/gpu: "1"
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+      modelAutoscaling:
+        interval: 10s
+        timeWindow: {{ .Values.scaleDownWindow | default "5m" }}
+      open-webui:
+        enabled: {{ if eq (toString .Values.chatUI) "false" }}false{{ else }}true{{ end }}
+        fullnameOverride: open-webui
+        ollama:
+          enabled: false
+        pipelines:
+          enabled: false
+        websocket:
+          enabled: false
+        # The public, metered endpoint when the Stack's meterChat is on, so chat is counted like any
+        # client. Otherwise KubeAI directly.
+        openaiBaseApiUrl: {{ .Values.chatBackendURL | default "http://kubeai/openai/v1" | quote }}
+        openaiApiKey: {{ .Values.apiKey | default "not-used" | quote }}
+        service:
+          type: NodePort
+          port: 80
+          nodePort: {{ .Values.chatNodePort | default "30081" }}
+        persistence:
+          enabled: false
+        extraEnvVars:
+          # No Open WebUI accounts: persistence is off, so they would not survive a restart.
+          # Anyone who can reach the chat hostname can use the model. See the README.
+          - name: WEBUI_AUTH
+            value: "False"
+          - name: SHOW_ADMIN_DETAILS
+            value: "false"
+          - name: SAFE_MODE
+            value: "true"
+          - name: ENABLE_EVALUATION_ARENA_MODELS
+            value: "False"
+          # "false" when the tenant cluster does not trust the endpoint's CA (self-signed or Let's
+          # Encrypt staging).
+          - name: AIOHTTP_CLIENT_SESSION_SSL
+            value: {{ if eq (toString .Values.chatBackendVerifyTLS) "false" }}"false"{{ else }}"true"{{ end }}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+  parameters:
+    - variable: apiNodePort
+      label: API node port
+      description: Inside the node port range, 30000-32767 by default.
+      type: string
+      defaultValue: "30080"
+      validation: '^3[0-9]{4}$'
+    - variable: chatNodePort
+      label: Chat UI node port
+      type: string
+      defaultValue: "30081"
+      validation: '^3[0-9]{4}$'
+    - variable: cpuRequest
+      label: CPU per model replica
+      description: Generation speed on CPU scales with cores up to the memory bandwidth limit. Leave the node a core for everything else.
+      type: string
+      defaultValue: "3"
+    - variable: memoryRequest
+      label: Memory per model replica
+      description: Must exceed the model's size plus room for the context window.
+      type: string
+      defaultValue: 3Gi
+    - variable: scaleDownWindow
+      label: Scale-to-zero window
+      type: string
+      defaultValue: 5m
+    - variable: chatUI
+      label: Deploy the chat UI
+      type: boolean
+      defaultValue: "true"
+    - variable: chatBackendURL
+      label: Chat UI backend
+      description: OpenAI-compatible base URL for Open WebUI.
+      type: string
+      defaultValue: http://kubeai/openai/v1
+    - variable: chatBackendVerifyTLS
+      label: Verify the chat backend's certificate
+      type: string
+      options:
+        - "true"
+        - "false"
+      defaultValue: "true"
+    - variable: apiKey
+      label: API key
+      description: Key Open WebUI sends to the metered endpoint.
+      type: password

@@ -1,0 +1,171 @@
+# Step 7: register this Stack's Prometheus and Grafana as the vCluster Platform observability
+# connector.
+#
+# vCluster Platform reconciles an observability connector Secret into its Fleet Observability
+# gateway (a write gateway and a query proxy in front of Prometheus) and into per-tenant Grafana
+# datasources that forward the viewer's Platform session. The Platform then proxies
+# `https://<platform-host>/grafana/` to the Grafana in step 8, and each tenant cluster's
+# Observability tab embeds the `vcluster-cluster-observability` dashboard through a datasource
+# scoped to that tenant cluster alone.
+#
+# The connector is marked as the fleet default. Only one connector may be, so do not enable
+# `platformIntegration` on a Platform that already has one, for example the Argo CD based Fleet
+# Observability templates.
+#
+# The post-install Job creates Grafana's OIDC client Secret once, with a random client secret,
+# and makes the connector Secret its owner so that removing this App removes the client too.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-platform-connector
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 7] Platform observability connector'
+  description: Registers the Stack's Prometheus and Grafana with vCluster Platform so tenants can see their own token usage.
+  defaultNamespace: inference-observability
+  wait: true
+  timeout: 5m
+  config:
+    manifests: |-
+      {{- $ns := .Values.platformNamespace | default "vcluster-platform" }}
+      {{- $host := .Values.platformHost | trimPrefix "https://" | trimPrefix "http://" | trimAll "/" }}
+      {{- if not $host }}{{ fail "platformHost is required when platformIntegration is true" }}{{ end }}
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: metered-inference
+        namespace: {{ $ns }}
+        labels:
+          loft.sh/connector-type: observability
+          platform.vcluster.com/fleet-observability-connector: "true"
+        annotations:
+          loft.sh/display-name: Metered inference
+      type: Opaque
+      stringData:
+        metricsBackendOtlpEndpoint: http://metered-inference-prometheus.{{ .Release.Namespace }}.svc.cluster.local/api/v1/otlp
+        metricsBackendPromQLEndpoint: http://metered-inference-prometheus.{{ .Release.Namespace }}.svc.cluster.local
+        grafanaUrl: http://metered-inference-grafana.{{ $ns }}.svc.cluster.local
+        # The Fleet Observability page embeds the all-tenant showback dashboard.
+        fleetObservabilityDashboardUid: metered-inference-showback
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metered-inference-connector
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: metered-inference-connector
+        namespace: {{ $ns }}
+      rules:
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["create"]
+        - apiGroups: [""]
+          resources: ["secrets"]
+          resourceNames: ["metered-inference", "metered-inference-grafana-oidc"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: metered-inference-connector
+        namespace: {{ $ns }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: metered-inference-connector
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-connector
+          namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: metered-inference-connector
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        backoffLimit: 2
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: metered-inference-connector
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: oidc-client
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: PLATFORM_NAMESPACE
+                    value: {{ $ns | quote }}
+                  - name: REDIRECT_URI
+                    value: {{ printf "https://%s/grafana/login/generic_oauth" $host | quote }}
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    secret=metered-inference-grafana-oidc
+                    owner_uid=$(kubectl -n "$PLATFORM_NAMESPACE" get secret metered-inference -o jsonpath='{.metadata.uid}')
+                    owner=$(jq -cn --arg uid "$owner_uid" \
+                      '[{apiVersion: "v1", kind: "Secret", name: "metered-inference", uid: $uid}]')
+
+                    if kubectl -n "$PLATFORM_NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
+                      echo "OIDC client $secret exists; keeping its client secret"
+                      # The redirect URI follows platformHost; the client secret never changes.
+                      patch=$(jq -cn --arg uri "$REDIRECT_URI" --argjson owner "$owner" \
+                        '{metadata: {ownerReferences: $owner}, stringData: {redirectURIs: $uri}}')
+                      kubectl -n "$PLATFORM_NAMESPACE" patch secret "$secret" --type merge -p "$patch"
+                      exit 0
+                    fi
+
+                    client_secret=$(openssl rand -hex 24)
+                    jq -n --arg ns "$PLATFORM_NAMESPACE" --arg name "$secret" --arg uri "$REDIRECT_URI" \
+                        --arg cs "$client_secret" --argjson owner "$owner" '{
+                      apiVersion: "v1", kind: "Secret", type: "Opaque",
+                      metadata: {
+                        name: $name, namespace: $ns, ownerReferences: $owner,
+                        labels: {clientID: "metered-inference-grafana", component: "oidcServer"}
+                      },
+                      stringData: {name: "Metered inference Grafana", clientID: "metered-inference-grafana", clientSecret: $cs, redirectURIs: $uri}
+                    }' | kubectl create -f -
+                    echo "created OIDC client $secret for $REDIRECT_URI"
+  parameters:
+    - variable: platformHost
+      label: Platform host
+      description: Externally reachable vCluster Platform host, without the scheme, for example platform.example.com.
+      type: string
+      required: true
+    - variable: platformNamespace
+      label: Platform namespace
+      type: string
+      defaultValue: vcluster-platform
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string

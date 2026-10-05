@@ -1,0 +1,178 @@
+# A tenant cluster on KubeVirt VMs that serves one model through the shared inference Gateway.
+#
+# SOURCE for platform/apps/03-cluster-template.yaml. metered-inference/render.py embeds it in that
+# App, which the metered-inference-platform Stack installs with these placeholders filled in from
+# the gateway Stack's endpoint contract:
+#   __DOMAIN__                   the gateway Stack's endpoint domain
+#   __SCHEME__                   https, or http with tlsIssuer none
+#   __CLUSTER_ISSUER__           metered-inference, or empty with tlsIssuer none
+#   __VERIFY_TLS__               "true" only with Let's Encrypt production certificates
+#   __JOB_IMAGE_PULL_SECRET__    the platform Stack's jobImagePullSecret
+# Edit this file, then run render.py. Tenants never set those values: they are fixed per control
+# plane cluster.
+#
+# It also needs, from the platform Stack: the metered-inference-kubeai StackTemplate and its Apps,
+# the metered-inference-endpoint App, and the kubevirt NodeProvider with the node types listed in
+# nodeType.
+#
+# Two halves, one set of values:
+#   - deploy.stacks runs the metered-inference-kubeai Stack inside the tenant cluster: KubeAI,
+#     the model, Open WebUI, and optional synthetic traffic, on fixed node ports.
+#   - spaceTemplate.apps runs the metered-inference-endpoint App in the tenant cluster's
+#     namespace on the control plane cluster: it points the shared Gateway at those node ports.
+# Both receive the same hostnames, computed here, so they agree before anything is deployed.
+#
+# Each tenant cluster is published at:
+#   API      <scheme>://<tenant-cluster>.<project>.<domain>/v1
+#   Chat UI  <scheme>://chat.<tenant-cluster>.<project>.<domain>
+apiVersion: management.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: metered-inference-kubevirt
+  annotations:
+    vcluster.com/template-icon: https://avatars.githubusercontent.com/u/232319222
+spec:
+  displayName: Metered inference (KubeVirt)
+  description: >-
+    A tenant cluster on KubeVirt VMs serving one open-weights model on an OpenAI-compatible
+    endpoint, published with its own hostname and certificate and token-metered by the control
+    plane cluster's shared inference Gateway.
+  owner:
+    user: admin
+  parameters:
+    - variable: modelURL
+      label: Model
+      description: >-
+        ollama://<model>:<tag>. In increasing order of quality and decreasing order of speed on CPU:
+        ollama://qwen2.5:0.5b, ollama://llama3.2:1b, ollama://qwen2.5:1.5b, ollama://qwen2.5:3b.
+      type: string
+      required: true
+      defaultValue: ollama://qwen2.5:1.5b
+    - variable: modelId
+      label: Model ID
+      description: What clients send as `model`. A DNS-1123 label of at most 40 characters.
+      type: string
+      required: true
+      defaultValue: qwen2-5-1-5b
+      validation: '^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$'
+    - variable: apiKey
+      label: API key
+      description: >-
+        Bearer token clients must send, at least 16 characters, for example the output of
+        `openssl rand -hex 24`. Leave empty for an open endpoint that anyone who finds the
+        hostname can spend tokens on.
+      type: password
+      defaultValue: ""
+      validation: '^$|^[A-Za-z0-9._~-]{16,256}$'
+    - variable: nodeType
+      label: VM size
+      description: >-
+        A node type of the KubeVirt NodeProvider. inference-large, which the platform Stack
+        creates, is 6 vCPU and 8Gi and fits a 1.5B Ollama model, the chat UI, and the add-ons.
+      type: string
+      options:
+        - inference-large
+      defaultValue: inference-large
+    - variable: nodeCount
+      label: Number of VMs
+      description: >-
+        Keep at 1. Masquerade binding gives every VM the same address, so the VMs of one tenant
+        cluster cannot reach each other.
+      type: number
+      defaultValue: "1"
+      min: 1
+      max: 4
+    - variable: trafficGenerators
+      label: Synthetic traffic
+      description: Clients inside the tenant cluster that send a steady trickle of chat completions, so showback has something to show. 0 turns them off.
+      type: number
+      defaultValue: "0"
+      min: 0
+      max: 4
+  template:
+    instanceTemplate:
+      metadata:
+        annotations:
+          loft.sh/custom-links: |
+            Inference API=__SCHEME__://{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__/v1
+            Chat UI=__SCHEME__://chat.{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__
+    spaceTemplate:
+      apps:
+        # Runs in the tenant cluster's namespace on the control plane cluster.
+        - name: metered-inference-endpoint
+          parameters: |
+            apiHostname: "{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__"
+            chatHostname: "chat.{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__"
+            apiNodePort: "30080"
+            chatNodePort: "30081"
+            clusterIssuer: "__CLUSTER_ISSUER__"
+            apiKey: "{{ .Values.apiKey }}"
+            gatewayName: inference
+            gatewayNamespace: inference-gateway
+            vmNamespace: kubevirt
+            schedule: "* * * * *"
+            jobImagePullSecret: "__JOB_IMAGE_PULL_SECRET__"
+    helmRelease:
+      chart:
+        version: 0.37.2
+      values: |
+        controlPlane:
+          backingStore:
+            etcd:
+              embedded:
+                enabled: true
+          distro:
+            k8s:
+              version: v1.36.5
+        privateNodes:
+          enabled: true
+          kubelet:
+            config:
+              kubeReserved:
+                cpu: "200m"
+                memory: "512Mi"
+                ephemeral-storage: "1Gi"
+              systemReserved:
+                cpu: "100m"
+                memory: "256Mi"
+              evictionHard:
+                memory.available: "300Mi"
+                nodefs.available: "10%"
+              serializeImagePulls: false
+              maxParallelImagePulls: 3
+          autoNodes:
+            - provider: kubevirt
+              static:
+                - name: inference-pool
+                  quantity: {{ .Values.nodeCount }}
+                  nodeTypeSelector:
+                    - property: vcluster.com/node-type
+                      operator: In
+                      values:
+                        - kubevirt.{{ .Values.nodeType }}
+        deploy:
+          stacks:
+            - name: inference
+              templateRef:
+                name: metered-inference-kubeai
+              parameters:
+                modelURL: "{{ .Values.modelURL }}"
+                modelId: "{{ .Values.modelId }}"
+                engine: OLlama
+                engineArgs: ""
+                envVars: ""
+                resourceProfile: "cpu:1"
+                cpuRequest: "3"
+                memoryRequest: 3Gi
+                minReplicas: "1"
+                maxReplicas: "1"
+                apiURL: "__SCHEME__://{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__/v1"
+                chatURL: "__SCHEME__://chat.{{ .Values.loft.virtualClusterName }}.{{ .Values.loft.project }}.__DOMAIN__"
+                apiKey: "{{ .Values.apiKey }}"
+                verifyTLS: "__VERIFY_TLS__"
+                apiNodePort: "30080"
+                chatNodePort: "30081"
+                chatUI: "true"
+                meterChat: "true"
+                verifyPublicEndpoint: "true"
+                trafficGenerators: "{{ .Values.trafficGenerators }}"

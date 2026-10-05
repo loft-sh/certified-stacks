@@ -1,0 +1,454 @@
+# Step 5: the shared inference Gateway, its certificate issuer, and the published endpoint contract.
+#
+# One agentgateway Gateway fronts every tenant cluster. It declares a single plain HTTP listener
+# on port 80, which also answers Let's Encrypt HTTP-01 challenges. Each tenant attaches its own
+# HTTPS listeners for its own hostnames through a ListenerSet in its own namespace, with a
+# certificate issued into that namespace, so tenants never share a private key and the Gateway
+# never needs editing when a tenant is added. agentgateway adds ListenerSet ports to the
+# Gateway's Service automatically.
+#
+# Only namespaces that vCluster Platform created for tenant clusters (they carry the
+# `loft.sh/vcluster-instance-name` label) can attach routes or ListenerSets.
+#
+# `tlsIssuer` selects the `metered-inference` ClusterIssuer that tenant certificates use:
+#   self-signed          A private CA, created here. Clients must trust its certificate, which the
+#                        Job below copies into the `metered-inference-gateway` ConfigMap.
+#   letsencrypt          Let's Encrypt production, HTTP-01 through this Gateway.
+#   letsencrypt-staging  Let's Encrypt staging: much higher rate limits, but clients do not trust
+#                        its certificates.
+#   none                 No issuer. Tenant endpoints are plain HTTP on port 80.
+#
+# The post-install Job waits for the Gateway to be programmed with an address, then writes the
+# address and the effective domain into the `metered-inference-gateway` ConfigMap, which the
+# Stack publishes as outputs. With an empty `domain`, the effective domain is
+# `<address>.sslip.io`, which only works for an IPv4 address.
+#
+# With `verifyDNS`, the Job also waits until a random name under the domain resolves to the
+# Gateway, so a DNS mistake fails this task instead of every tenant endpoint later. The Stack only
+# turns it on when external-dns manages the record: with dnsProvider none you create the record
+# from the address output, which is only published once this task succeeds.
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: metered-inference-shared-gateway
+  labels:
+    inference.vcluster.com/stack: gateway
+spec:
+  displayName: '[Metered Inference Gateway - 5] Shared inference Gateway'
+  description: Creates the shared agentgateway Gateway, the tenant certificate ClusterIssuer, and the endpoint contract ConfigMap.
+  defaultNamespace: inference-gateway
+  wait: true
+  # Covers a cloud load balancer taking a few minutes to get an address, ACME registration, and
+  # DNS propagation. Keep it below the gateway task's timeout.
+  timeout: 25m
+  config:
+    manifests: |-
+      {{- $tls := .Values.tlsIssuer | default "self-signed" }}
+      {{- $cmNamespace := .Values.certManagerNamespace | default "cert-manager" }}
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayParameters
+      metadata:
+        name: inference
+        namespace: {{ .Release.Namespace }}
+      spec:
+        service:
+          metadata:
+            labels:
+              # external-dns (step 2) publishes only Services with this label.
+              inference.vcluster.com/external-dns: "true"
+            {{- if or .Values.domain .Values.serviceAnnotations }}
+            annotations:
+              {{- if .Values.domain }}
+              external-dns.kubernetes.io/hostname: {{ printf "*.%s" .Values.domain | quote }}
+              external-dns.kubernetes.io/ttl: "300"
+              {{- end }}
+              {{- with .Values.serviceAnnotations }}
+              {{- . | trim | nindent 8 }}
+              {{- end }}
+            {{- end }}
+          spec:
+            type: {{ .Values.serviceType | default "LoadBalancer" }}
+            # Port 443 from the start, so the first tenant's ListenerSet does not change the load
+            # balancer. Some providers, such as GKE, recreate it to add a port, which interrupts
+            # every port while that tenant's HTTP-01 challenge runs. agentgateway's own entry for
+            # the port merges with this one.
+            ports:
+              - name: listener-443
+                port: 443
+                protocol: TCP
+                targetPort: 443
+      ---
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: inference
+        namespace: {{ .Release.Namespace }}
+      spec:
+        gatewayClassName: agentgateway
+        infrastructure:
+          parametersRef:
+            group: agentgateway.dev
+            kind: AgentgatewayParameters
+            name: inference
+        allowedListeners:
+          namespaces:
+            from: Selector
+            selector:
+              matchExpressions:
+                - key: loft.sh/vcluster-instance-name
+                  operator: Exists
+        listeners:
+          - name: http
+            port: 80
+            protocol: HTTP
+            allowedRoutes:
+              namespaces:
+                from: Selector
+                selector:
+                  matchExpressions:
+                    - key: loft.sh/vcluster-instance-name
+                      operator: Exists
+      ---
+      {{- if eq $tls "self-signed" }}
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: metered-inference-bootstrap
+      spec:
+        selfSigned: {}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: metered-inference-ca
+        # ClusterIssuers read their CA Secret from cert-manager's cluster resource namespace.
+        namespace: {{ $cmNamespace }}
+      spec:
+        isCA: true
+        commonName: Metered inference CA
+        secretName: metered-inference-ca
+        duration: 87600h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: metered-inference-bootstrap
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: metered-inference
+      spec:
+        ca:
+          secretName: metered-inference-ca
+      ---
+      {{- else if hasPrefix "letsencrypt" $tls }}
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: metered-inference
+      spec:
+        acme:
+          server: {{ if eq $tls "letsencrypt" }}https://acme-v02.api.letsencrypt.org/directory{{ else }}https://acme-staging-v02.api.letsencrypt.org/directory{{ end }}
+          privateKeySecretRef:
+            name: metered-inference-acme-account
+          solvers:
+            - http01:
+                gatewayHTTPRoute:
+                  parentRefs:
+                    - group: gateway.networking.k8s.io
+                      kind: Gateway
+                      name: inference
+                      namespace: {{ .Release.Namespace }}
+                      sectionName: http
+      ---
+      {{- end }}
+      # The contract the platform Stack builds the tenant cluster template from. The Job below adds
+      # address, domain, and caCert.
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: metered-inference-gateway
+        namespace: {{ .Release.Namespace }}
+      data:
+        gatewayName: inference
+        gatewayNamespace: {{ .Release.Namespace }}
+        clusterIssuer: {{ if eq $tls "none" }}""{{ else }}metered-inference{{ end }}
+        scheme: {{ if eq $tls "none" }}http{{ else }}https{{ end }}
+        tlsIssuer: {{ $tls | quote }}
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ .Release.Namespace }}
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ .Release.Namespace }}
+      rules:
+        - apiGroups: ["gateway.networking.k8s.io"]
+          resources: ["gateways"]
+          resourceNames: ["inference"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["services"]
+          resourceNames: ["inference"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: ["metered-inference-gateway"]
+          verbs: ["get", "patch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ .Release.Namespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: metered-inference-gateway-status
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-gateway-status
+          namespace: {{ .Release.Namespace }}
+      ---
+      {{- if ne $tls "none" }}
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: metered-inference-gateway-status
+      rules:
+        - apiGroups: ["cert-manager.io"]
+          resources: ["clusterissuers"]
+          resourceNames: ["metered-inference"]
+          verbs: ["get", "list", "watch"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: metered-inference-gateway-status
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: metered-inference-gateway-status
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-gateway-status
+          namespace: {{ .Release.Namespace }}
+      ---
+      {{- end }}
+      {{- if eq $tls "self-signed" }}
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ $cmNamespace }}
+      rules:
+        # Only the public half is copied out; the Job never writes the key anywhere.
+        - apiGroups: [""]
+          resources: ["secrets"]
+          resourceNames: ["metered-inference-ca"]
+          verbs: ["get"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ $cmNamespace }}
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: metered-inference-gateway-status
+      subjects:
+        - kind: ServiceAccount
+          name: metered-inference-gateway-status
+          namespace: {{ .Release.Namespace }}
+      ---
+      {{- end }}
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: metered-inference-gateway-status
+        namespace: {{ .Release.Namespace }}
+        annotations:
+          helm.sh/hook: post-install,post-upgrade
+          helm.sh/hook-delete-policy: before-hook-creation
+      spec:
+        # One attempt: a retry would repeat the waits and outlast Helm's timeout, hiding the reason.
+        # The Stack retries the task instead.
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            serviceAccountName: metered-inference-gateway-status
+            restartPolicy: Never
+            {{- if .Values.jobImagePullSecret }}
+            imagePullSecrets:
+              - name: {{ .Values.jobImagePullSecret | quote }}
+            {{- end }}
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: status
+                image: {{ .Values.__image__ | quote }}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+                env:
+                  - name: HOME
+                    value: /tmp
+                  - name: NAMESPACE
+                    value: {{ .Release.Namespace }}
+                  - name: DOMAIN
+                    value: {{ .Values.domain | default "" | quote }}
+                  - name: TLS_ISSUER
+                    value: {{ $tls | quote }}
+                  - name: CM_NAMESPACE
+                    value: {{ $cmNamespace | quote }}
+                  - name: VERIFY_DNS
+                    value: {{ if eq (toString .Values.verifyDNS) "true" }}"true"{{ else }}"false"{{ end }}
+                  - name: DNS_RESOLVER
+                    value: {{ .Values.dnsCheckResolver | default "" | quote }}
+                  - name: DNS_TIMEOUT_SECONDS
+                    value: "600"
+                  - name: POLL_SECONDS
+                    value: "5"
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    echo "waiting for Gateway ${NAMESPACE}/inference to be programmed"
+                    kubectl -n "$NAMESPACE" wait gateway/inference --for=condition=Programmed --timeout=300s
+
+                    gateway_address() {
+                      reported=$(kubectl -n "$NAMESPACE" get gateway inference -o jsonpath='{.status.addresses[0].value}')
+                      [ -n "$reported" ] || return 0
+                      kubectl -n "$NAMESPACE" get service inference -o json 2>/dev/null | jq -r --arg address "$reported" '
+                        select(.metadata.deletionTimestamp == null)
+                        | select(.spec.type != "LoadBalancer"
+                            or any(.status.loadBalancer.ingress[]?; .ip == $address or .hostname == $address))
+                        | $address'
+                    }
+
+                    address=""
+                    for _ in $(seq 1 60); do
+                      address=$(gateway_address)
+                      [ -n "$address" ] && break
+                      sleep "$POLL_SECONDS"
+                    done
+                    [ -n "$address" ] || { echo "Gateway has no address that its Service also reports after 5 minutes. Is a LoadBalancer implementation available?" >&2; exit 1; }
+                    echo "Gateway address: $address"
+
+                    domain="$DOMAIN"
+                    if [ -z "$domain" ]; then
+                      case "$address" in
+                        *[!0-9.]*) echo "domain is empty and the Gateway address $address is not an IPv4 address, so there is no sslip.io fallback. Set domain." >&2; exit 1 ;;
+                      esac
+                      domain="${address}.sslip.io"
+                    fi
+                    echo "tenant endpoints are published under $domain"
+
+                    ca=""
+                    if [ "$TLS_ISSUER" != none ]; then
+                      kubectl wait clusterissuer/metered-inference --for=condition=Ready --timeout=300s || {
+                        echo "ClusterIssuer metered-inference is not Ready; see kubectl describe clusterissuer metered-inference" >&2
+                        exit 1
+                      }
+                    fi
+                    if [ "$TLS_ISSUER" = self-signed ]; then
+                      ca=$(kubectl -n "$CM_NAMESPACE" get secret metered-inference-ca -o jsonpath='{.data.ca\.crt}' | base64 -d)
+                    fi
+
+                    if [ "$VERIFY_DNS" = true ] && [ -n "$DOMAIN" ]; then
+                      # IPv4 answers for a name, one per line. Handles both busybox nslookup formats,
+                      # "Address: <ip>" and "Address 1: <ip> [<reverse name>]"; the resolver's own
+                      # address comes before the first Name line, so it is skipped.
+                      resolve() {
+                        nslookup "$1" $DNS_RESOLVER 2>/dev/null | awk '
+                          /^Name:/ { answer = 1; next }
+                          answer && /^Address/ { sub(/^Address[^:]*:[ \t]*/, ""); split($0, field, /[ \t]/); print field[1] }' \
+                          | grep -E '^[0-9]+(\.[0-9]+){3}$' | sort -u || true
+                      }
+                      echo "waiting for *.${domain} to resolve to the Gateway${DNS_RESOLVER:+ through $DNS_RESOLVER}"
+                      deadline=$(( $(date +%s) + DNS_TIMEOUT_SECONDS ))
+                      while :; do
+                        current=$(gateway_address)
+                        [ -z "$current" ] || address="$current"
+                        # A fresh name each time, so no resolver can answer from a cached miss.
+                        probe="probe-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n').${domain}"
+                        answers=$(resolve "$probe")
+                        # A load balancer hostname (AWS) is published as an alias: compare addresses.
+                        case "$address" in
+                          *[!0-9.]*) expected=$(resolve "$address") ;;
+                          *) expected="$address" ;;
+                        esac
+                        if [ -n "$answers" ] && { [ -z "$expected" ] || printf '%s\n' "$answers" | grep -qxF "$expected"; }; then
+                          echo "$probe resolves to $(printf '%s' "$answers" | tr '\n' ' ')"
+                          break
+                        fi
+                        if [ "$(date +%s)" -ge "$deadline" ]; then
+                          echo "*.${domain} does not resolve to the Gateway (${address}) after ${DNS_TIMEOUT_SECONDS}s; $probe answered '$(printf '%s' "${answers:-nothing}" | tr '\n' ' ')'. Check the external-dns logs and that its credentials can see the zone holding ${domain}. Set dnsCheckResolver if cluster DNS cannot see the public zone, or verifyDNS false to skip this check." >&2
+                          exit 1
+                        fi
+                        sleep 15
+                      done
+                    fi
+
+                    patch=$(jq -cn --arg address "$address" --arg domain "$domain" --arg ca "$ca" \
+                      '{data: {address: $address, domain: $domain, caCert: $ca}}')
+                    kubectl -n "$NAMESPACE" patch configmap metered-inference-gateway --type merge -p "$patch"
+                    echo "published endpoint contract in ${NAMESPACE}/metered-inference-gateway"
+  parameters:
+    - variable: domain
+      label: Inference domain
+      type: string
+    - variable: tlsIssuer
+      label: TLS issuer
+      type: string
+      options:
+        - self-signed
+        - letsencrypt
+        - letsencrypt-staging
+        - none
+      defaultValue: self-signed
+    - variable: certManagerNamespace
+      label: cert-manager namespace
+      type: string
+      defaultValue: cert-manager
+    - variable: serviceType
+      label: Gateway Service type
+      type: string
+      options:
+        - LoadBalancer
+        - NodePort
+        - ClusterIP
+      defaultValue: LoadBalancer
+    - variable: serviceAnnotations
+      label: Gateway Service annotations
+      type: multiline
+    - variable: jobImagePullSecret
+      label: Job image pull Secret
+      type: string
+    - variable: verifyDNS
+      label: Wait for the DNS record
+      type: boolean
+      defaultValue: "false"
+    - variable: dnsCheckResolver
+      label: DNS check resolver
+      type: string
